@@ -1468,10 +1468,8 @@
             } catch (err) {
               if (err.name === 'AbortError') {
                 if (cancelRequested) {
-                  // User canceled, stop entirely
                   return;
                 } else {
-                  // Timeout or other abort not from user – treat as network error
                   result = { status: 'error', raw: '', lines: [], message: 'timeout/network error' };
                   if (!fatalNetworkError) fatalNetworkError = err;
                 }
@@ -1489,7 +1487,6 @@
               console.error('OmniLogs: display update failed for item', idx, renderErr);
             }
             completed++;
-            // Update UI (throttled via requestAnimationFrame)
             const pct = Math.round((completed / total) * 100);
             statusText.textContent = `Loading ${channel} from ${provider.label} (${completed} / ${total})`;
             progressPct.textContent = `${pct}%`;
@@ -1502,7 +1499,7 @@
         await Promise.all(workers);
       } catch (err) {
         if (err.name === 'AbortError' && cancelRequested) {
-          // ignore, we handle cancel
+          // ignore
         } else {
           console.error('OmniLogs: unexpected error during load', err);
         }
@@ -1526,10 +1523,8 @@
         }
       }
 
-      // If we get here and cancelRequested is true, we already returned above
       if (cancelRequested) break;
 
-      // Ensure all results are filled
       dayResults = dayResults.map(r => r || { status: 'error', raw: '', lines: [], message: 'did not finish loading' });
 
       const okDays = dayResults.filter(r => r.status === 'ok').length;
