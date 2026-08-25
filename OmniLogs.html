@@ -1,0 +1,1443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OmniLogs</title>
+<style>
+  :root {
+    --bg: #0b0b0f;
+    --panel: #131318;
+    --panel-2: #191920;
+    --border: #24242e;
+    --text: #e6e6eb;
+    --muted: #8b8b96;
+    --accent: #9146ff;
+    --accent-dim: #4c2a8f;
+    --error: #ff5c5c;
+    --ok: #3ddc84;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    height: 100%;
+  }
+
+  .app { display: flex; flex-direction: column; height: 100vh; }
+
+  header {
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 20px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: flex-end;
+  }
+
+  .brand-wrap {
+    display: flex;
+    align-items: center;
+    margin-right: 14px;
+    align-self: center;
+  }
+  .brand {
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-weight: 800;
+    font-size: 20px;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    color: var(--text);
+  }
+  .brand .accent {
+    color: var(--accent);
+    text-shadow: 0 0 6px rgba(145, 70, 255, 0.55), 0 0 14px rgba(145, 70, 255, 0.25);
+  }
+
+  .field { display: flex; flex-direction: column; gap: 3px; position: relative; }
+  .field label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+  }
+  input, select, button {
+    font-family: inherit;
+    font-size: 13px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 7px 10px;
+    outline: none;
+  }
+  input:focus, select:focus { border-color: var(--accent); }
+  input:disabled, select:disabled, button:disabled { opacity: 0.55; cursor: default; }
+  input#channel, input#username {
+    width: 140px;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    transition: border-color 0.15s ease;
+  }
+  input#channel.checking { border-color: var(--muted); }
+  input#channel.error { border-color: var(--error); }
+  input#channel.error:focus { border-color: var(--error); }
+
+  .channel-error {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    font-size: 10.5px;
+    color: var(--error);
+    max-width: 220px;
+    line-height: 1.3;
+    z-index: 6;
+  }
+
+  select#month { width: 122px; }
+  input#year { width: 76px; }
+  input#day { width: 150px; }
+
+  /* LED-style availability dots + custom provider picker */
+  .led {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #3a3a44;
+    flex: none;
+    transition: background 0.2s ease, box-shadow 0.2s ease;
+  }
+  .led.checking { background: #6a6a76; animation: ledFlicker 1s ease-in-out infinite; }
+  .led.on-green { background: #3ddc84; box-shadow: 0 0 3px 1px rgba(61, 220, 132, 0.45); }
+  .led.on-red { background: #ff5c5c; box-shadow: 0 0 3px 1px rgba(255, 92, 92, 0.45); }
+  @keyframes ledFlicker { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  .provider-picker { position: relative; }
+  .provider-picker-btn {
+    width: 210px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    cursor: pointer;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  }
+  .provider-picker-btn .caret { margin-left: auto; color: var(--muted); font-size: 10px; }
+  .provider-picker-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    width: 230px;
+    max-height: 280px;
+    overflow-y: auto;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    z-index: 50;
+    box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+  }
+  .provider-picker-menu.open { display: block; }
+  .provider-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    cursor: pointer;
+    font-size: 12.5px;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  }
+  .provider-option:hover { background: var(--panel); }
+  .provider-option.selected { background: var(--accent-dim); color: #fff; }
+
+  button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 8px 16px;
+    transition: background 0.15s ease;
+  }
+  button.primary:hover:not(:disabled) { background: #7d38e0; }
+  button.primary:disabled { background: var(--accent-dim); }
+
+  button.secondary { cursor: pointer; color: var(--muted); }
+  button.secondary:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
+
+  .seg-group { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .seg-btn {
+    background: var(--panel-2);
+    border: none;
+    border-right: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12.5px;
+    padding: 7px 12px;
+    cursor: pointer;
+    border-radius: 0;
+  }
+  .seg-btn:last-child { border-right: none; }
+  .seg-btn:hover { color: var(--text); }
+  .seg-btn.active { background: var(--accent-dim); color: #fff; }
+  .seg-btn:disabled { cursor: default; opacity: 0.55; }
+
+  .toggle-btn {
+    cursor: pointer;
+    color: var(--muted);
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .toggle-btn:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
+  .toggle-btn .arrow { color: var(--accent); font-weight: 700; }
+
+  .spacer { flex: 1; }
+  #filter { width: 190px; }
+
+  #autoSwitchNote {
+    display: none;
+    font-size: 10.5px;
+    color: var(--accent);
+    padding: 6px 20px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .status-bar {
+    padding: 8px 20px;
+    font-size: 12px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    display: none;
+    align-items: center;
+    gap: 10px;
+  }
+  .status-bar.visible { display: flex; }
+  .pulse-live {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent);
+    animation: dotPulse 0.9s ease-in-out infinite;
+    flex: none;
+    display: inline-block;
+  }
+  @keyframes dotPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  .progress-track {
+    flex: 1;
+    max-width: 260px;
+    height: 4px;
+    background: var(--panel-2);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .progress-fill { height: 100%; background: var(--accent); width: 0%; transition: width 0.15s ease; }
+  .progress-pct { font-variant-numeric: tabular-nums; min-width: 32px; }
+
+  main { flex: 1; overflow-y: auto; padding: 0 0 60px 0; }
+
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100%;
+    color: var(--muted);
+    gap: 8px;
+    padding: 40px;
+    text-align: center;
+  }
+  .empty-state .cursor {
+    display: inline-block;
+    width: 8px;
+    height: 16px;
+    background: var(--accent);
+    margin-left: 2px;
+    animation: blink 1s steps(1) infinite;
+    vertical-align: middle;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* static month divider, used only in filtered/flat mode */
+  .month-divider {
+    background: var(--panel-2);
+    border-bottom: 1px solid var(--border);
+    border-top: 1px solid var(--border);
+    padding: 9px 20px;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    color: var(--accent);
+  }
+
+  /* collapsible month box, used in channel-mode Year view when not filtering */
+  .month-box { border-bottom: 1px solid var(--border); }
+  .month-box-header {
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 20px;
+    background: var(--panel-2);
+    border-bottom: 1px solid var(--border);
+  }
+  .month-box-header:hover { background: #202029; }
+  .month-box-left { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px; color: var(--accent); }
+  .month-box-meta { font-size: 11px; color: var(--muted); font-weight: 400; }
+  .month-box-body { }
+
+  .chevron {
+    display: inline-block;
+    width: 14px;
+    font-size: 13px;
+    color: var(--accent);
+  }
+
+  .day-block { border-bottom: 1px solid var(--border); }
+
+  .day-header {
+    position: sticky;
+    top: 0;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 7px 20px;
+    font-size: 12px;
+    color: var(--muted);
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    display: flex;
+    justify-content: space-between;
+    z-index: 5;
+  }
+  .day-header-left { display: flex; align-items: center; gap: 4px; }
+  .day-header.expandable { cursor: pointer; }
+  .day-header.expandable:hover { background: #1a1a22; }
+  .day-header .date { color: var(--text); font-weight: 600; }
+  .day-header .meta.ok { color: var(--ok); }
+  .day-header .meta.empty { color: var(--muted); }
+  .day-header .meta.error { color: var(--error); }
+
+  .log-lines {
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 12.5px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding: 10px 20px;
+    margin: 0;
+  }
+  .log-lines mark { background: var(--accent-dim); color: #fff; border-radius: 2px; }
+
+  .day-empty-note, .day-error-note {
+    padding: 6px 20px 14px 20px;
+    font-size: 12px;
+    color: var(--muted);
+    font-style: italic;
+  }
+  .day-error-note { color: var(--error); }
+
+  footer {
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+    padding: 8px 20px;
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  #summaryWrap { display: flex; align-items: center; gap: 7px; }
+
+  #cors-banner {
+    display: none;
+    background: #2a1414;
+    border-bottom: 1px solid var(--error);
+    color: #ffb3b3;
+    padding: 10px 20px;
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+  #cors-banner.visible { display: block; }
+  #cors-banner code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 4px; }
+
+  .hidden-field { display: none !important; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand-wrap">
+      <div class="brand"><span class="accent">Omni</span>Logs</div>
+    </div>
+
+    <div class="field">
+      <label>Provider</label>
+      <div class="provider-picker" id="providerPicker">
+        <button type="button" class="provider-picker-btn" id="providerBtn">
+          <span class="led" id="providerBtnLed"></span>
+          <span id="providerBtnLabel"></span>
+          <span class="caret">&#9662;</span>
+        </button>
+        <div class="provider-picker-menu" id="providerMenu"></div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="channel">Channel</label>
+      <input id="channel" type="text" placeholder="username" spellcheck="false" autocomplete="off">
+      <div class="channel-error" id="channelError"></div>
+    </div>
+
+    <div class="field">
+      <label for="username">User (optional)</label>
+      <input id="username" type="text" placeholder="username" spellcheck="false" autocomplete="off">
+    </div>
+
+    <div class="field">
+      <label>View</label>
+      <div class="seg-group" id="viewSeg">
+        <button class="seg-btn" data-view="day">Day</button>
+        <button class="seg-btn active" data-view="month">Month</button>
+        <button class="seg-btn" data-view="year">Year</button>
+      </div>
+    </div>
+
+    <div class="field" id="dayField">
+      <label for="day">Date</label>
+      <input id="day" type="date">
+    </div>
+
+    <div class="field" id="monthField">
+      <label for="month">Month</label>
+      <select id="month"></select>
+    </div>
+
+    <div class="field" id="yearField">
+      <label for="year">Year</label>
+      <input id="year" type="number" min="2015" max="2100">
+    </div>
+
+    <div class="field">
+      <label>&nbsp;</label>
+      <button class="secondary toggle-btn" id="reverseBtn" type="button">
+        <span class="arrow" id="reverseArrow">&darr;</span><span id="reverseLabel">Oldest to Newest</span>
+      </button>
+    </div>
+
+    <div class="field">
+      <label>&nbsp;</label>
+      <button class="primary" id="loadBtn">Load month</button>
+    </div>
+
+    <div class="spacer"></div>
+
+    <div class="field">
+      <label for="filter">Filter</label>
+      <input id="filter" type="text" placeholder="text..." spellcheck="false" autocomplete="off">
+    </div>
+
+    <div class="field">
+      <label>&nbsp;</label>
+      <button class="secondary" id="downloadBtn" disabled>Download .txt</button>
+    </div>
+  </header>
+
+  <div id="autoSwitchNote"></div>
+
+  <div id="cors-banner">
+    Could not reach <code id="corsHost">logs.potat.app</code> from this page. The browser blocked it (likely CORS,
+    since that API is not set up for direct in-browser requests from other sites). Try a different provider
+    above, it may allow it.
+  </div>
+
+  <div class="status-bar" id="statusBar">
+    <span class="pulse-live"></span>
+    <span id="statusText">Loading...</span>
+    <span class="progress-pct" id="progressPct">0%</span>
+    <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+  </div>
+
+  <main id="main"></main>
+
+  <footer>
+    <span id="summaryWrap">
+      <span class="pulse-live" id="summaryPulse" style="display:none;"></span>
+      <span id="summaryText">No logs loaded yet.</span>
+    </span>
+    <span id="sourceLabel">Data source: logs.potat.app (unofficial, third-party)</span>
+  </footer>
+</div>
+
+<script>
+(function () {
+  const PROVIDERS = [
+    { label: 'logs.potat.app',         host: 'logs.potat.app' },
+    { label: 'logs.spanix.team',       host: 'logs.spanix.team' },
+    { label: 'logs.nadeko.net',        host: 'logs.nadeko.net' },
+    { label: 'logs.ivr.fi',            host: 'logs.ivr.fi' },
+    { label: 'harambelogs.pl',         host: 'harambelogs.pl' },
+    { label: 'logs.magichack.xyz',     host: 'logs.magichack.xyz' },
+    { label: 'logs.susgee.dev',        host: 'logs.susgee.dev' },
+    { label: 'logs.mejkiz.com',        host: 'logs.mejkiz.com' },
+    { label: 'logs.fais.al',           host: 'logs.fais.al' },
+    { label: 'logs.folhinhabot.com',   host: 'logs.folhinhabot.com' },
+    { label: 'logxx.dev',              host: 'logxx.dev' },
+    { label: 'logs.mrchuw.com.br',     host: 'logs.mrchuw.com.br' },
+    { label: 'logs.twitchmetrics.xyz', host: 'logs.twitchmetrics.xyz' },
+    { label: 'logs.jimmyboy.dev',      host: 'logs.jimmyboy.dev' },
+  ];
+
+  const providerBtn = document.getElementById('providerBtn');
+  const providerBtnLed = document.getElementById('providerBtnLed');
+  const providerBtnLabel = document.getElementById('providerBtnLabel');
+  const providerMenu = document.getElementById('providerMenu');
+  const providerPicker = document.getElementById('providerPicker');
+  const monthSelect = document.getElementById('month');
+  const yearInput = document.getElementById('year');
+  const dayInput = document.getElementById('day');
+  const channelInput = document.getElementById('channel');
+  const channelError = document.getElementById('channelError');
+  const usernameInput = document.getElementById('username');
+  const loadBtn = document.getElementById('loadBtn');
+  const filterInput = document.getElementById('filter');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const main = document.getElementById('main');
+  const statusBar = document.getElementById('statusBar');
+  const statusText = document.getElementById('statusText');
+  const progressFill = document.getElementById('progressFill');
+  const progressPct = document.getElementById('progressPct');
+  const summaryText = document.getElementById('summaryText');
+  const summaryPulse = document.getElementById('summaryPulse');
+  const corsBanner = document.getElementById('cors-banner');
+  const corsHost = document.getElementById('corsHost');
+  const sourceLabel = document.getElementById('sourceLabel');
+  const viewSeg = document.getElementById('viewSeg');
+  const daySegBtn = viewSeg.querySelector('[data-view="day"]');
+  const dayField = document.getElementById('dayField');
+  const monthField = document.getElementById('monthField');
+  const yearField = document.getElementById('yearField');
+  const reverseBtn = document.getElementById('reverseBtn');
+  const reverseArrow = document.getElementById('reverseArrow');
+  const reverseLabel = document.getElementById('reverseLabel');
+  const autoSwitchNote = document.getElementById('autoSwitchNote');
+
+  const MONTHS = ["January","February","March","April","May","June",
+                  "July","August","September","October","November","December"];
+  MONTHS.forEach((m, i) => {
+    const opt = document.createElement('option');
+    opt.value = i + 1;
+    opt.textContent = m;
+    monthSelect.appendChild(opt);
+  });
+
+  // Custom provider picker (a native <select> cannot style per-option LED dots)
+  let selectedProviderIdx = 0;
+  const providerOptionEls = PROVIDERS.map((p, i) => {
+    const row = document.createElement('div');
+    row.className = 'provider-option';
+    const led = document.createElement('span');
+    led.className = 'led';
+    const label = document.createElement('span');
+    label.textContent = p.label;
+    row.appendChild(led);
+    row.appendChild(label);
+    row.addEventListener('click', () => {
+      selectProvider(i);
+      autoSwitchNote.style.display = 'none';
+      closeProviderMenu();
+    });
+    providerMenu.appendChild(row);
+    return { rowEl: row, ledEl: led };
+  });
+
+  function selectProvider(idx) {
+    selectedProviderIdx = idx;
+    providerBtnLabel.textContent = PROVIDERS[idx].label;
+    providerBtnLed.className = providerOptionEls[idx].ledEl.className;
+    providerOptionEls.forEach((o, i) => o.rowEl.classList.toggle('selected', i === idx));
+  }
+  function toggleProviderMenu() {
+    if (providerBtn.disabled) return;
+    providerMenu.classList.toggle('open');
+  }
+  function closeProviderMenu() { providerMenu.classList.remove('open'); }
+  providerBtn.addEventListener('click', toggleProviderMenu);
+  document.addEventListener('click', e => { if (!providerPicker.contains(e.target)) closeProviderMenu(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeProviderMenu(); });
+  selectProvider(0);
+
+  const pageLoadDate = new Date();
+  monthSelect.value = pageLoadDate.getMonth() + 1;
+  yearInput.value = pageLoadDate.getFullYear();
+  dayInput.value = `${pageLoadDate.getFullYear()}-${pad(pageLoadDate.getMonth() + 1)}-${pad(pageLoadDate.getDate())}`;
+
+  let currentView = 'month';
+  let reverseOrder = false;
+  let currentChannel = '';
+  let currentUsername = '';
+  let currentUserMode = false;
+  let currentLabel = '';
+  let dateList = [];      // [{year, month, day}] chronological ascending, day is null in user mode
+  let dayResults = [];    // parallel to dateList: {status, raw, lines, message}, filled progressively
+  let slotEls = [];       // parallel to dateList: slot object, or null if not built yet (e.g. collapsed month not expanded)
+  let monthGroups = [];   // channel-mode Year view only
+  let idxToGroup = [];    // dateList index -> monthGroups index, channel-mode Year view only
+  let loading = false;
+
+  let providerStatuses = new Array(PROVIDERS.length).fill('idle');
+  let channelCheckToken = 0;
+  let lastCheckedChannel = null;
+  let lastCheckResult = null;
+  const logCache = new Map();          // cache key -> result
+  const channelListCache = new Map();  // hostIdx -> Set<string>, only successful lookups are cached
+  const channelListPromises = new Map();
+
+  function daysInMonth(year, month) { return new Date(year, month, 0).getDate(); }
+  function pad(n) { return String(n).padStart(2, '0'); }
+  function ordinal(n) {
+    const s = ['th', 'st', 'nd', 'rd'];
+    const v = n % 100;
+    return s[(v - 20) % 10] || s[v] || s[0];
+  }
+  function dayOfWeek(year, month, day) {
+    return new Date(year, month - 1, day).toLocaleDateString(undefined, { weekday: 'short' });
+  }
+  function labelForItem(item) {
+    if (item.day) {
+      const dateStr = `${item.year}-${pad(item.month)}-${pad(item.day)}`;
+      return `${dateStr}  (${dayOfWeek(item.year, item.month, item.day)})`;
+    }
+    return `${MONTHS[item.month - 1]} ${item.year}`;
+  }
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+  function fetchWithTimeout(url, ms) {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), ms);
+    return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(t));
+  }
+  function setControlsDisabled(disabled) {
+    providerBtn.disabled = disabled;
+    channelInput.disabled = disabled;
+    usernameInput.disabled = disabled;
+    monthSelect.disabled = disabled;
+    yearInput.disabled = disabled;
+    dayInput.disabled = disabled;
+    viewSeg.querySelectorAll('.seg-btn').forEach(b => b.disabled = disabled);
+  }
+
+  // A dedicated place to show a message where the log list would go. Built fresh
+  // every time rather than toggling a persisted node, since a persisted node gets
+  // detached the moment main.innerHTML is cleared for the next load.
+  function showEmptyState(html) {
+    main.innerHTML = `<div class="empty-state">${html}</div>`;
+  }
+  showEmptyState(`
+    <div>Type a channel, choose a day, month or year, and hit Load<span class="cursor"></span></div>
+    <div style="font-size:11px;max-width:440px;">
+      As you type a channel, every provider is checked automatically in the Provider dropdown. The LED
+      next to each name lights up green if that channel is logged there, red if it is not. The best
+      available one is auto-selected. Month and Year views load into collapsed boxes: click a day (or a
+      month, in Year view) to expand it. Searching the filter box expands everything that matches. Add an
+      optional username to pull just that person's messages instead of the whole channel.
+    </div>
+  `);
+
+  // ---- view mode switching ----
+  function setView(view) {
+    currentView = view;
+    viewSeg.querySelectorAll('.seg-btn').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+    dayField.classList.toggle('hidden-field', view !== 'day');
+    monthField.classList.toggle('hidden-field', view !== 'month');
+    yearField.classList.toggle('hidden-field', view === 'day');
+    loadBtn.textContent = view === 'day' ? 'Load day' : view === 'year' ? 'Load year' : 'Load month';
+  }
+  viewSeg.addEventListener('click', e => {
+    const btn = e.target.closest('.seg-btn');
+    if (!btn || btn.disabled) return;
+    setView(btn.dataset.view);
+  });
+  setView('month');
+
+  // Per-user lookups only support month granularity on these providers, so Day
+  // view is disabled while a username is entered.
+  usernameInput.addEventListener('input', () => {
+    const has = !!usernameInput.value.trim();
+    daySegBtn.disabled = has;
+    daySegBtn.title = has
+      ? "Day view isn't available for single-user lookups; these providers only expose per-user logs by month."
+      : '';
+    if (has && currentView === 'day') setView('month');
+  });
+
+  // ---- reverse-order toggle: rebuild from already-fetched results, no refetch ----
+  function setReverse(rev) {
+    reverseOrder = rev;
+    reverseArrow.innerHTML = rev ? '&uarr;' : '&darr;';
+    reverseLabel.textContent = rev ? 'Newest to Oldest' : 'Oldest to Newest';
+    if (dateList.length) renderMain();
+  }
+  reverseBtn.addEventListener('click', () => { if (!loading) setReverse(!reverseOrder); });
+
+  // =========================================================
+  // Provider channel-availability checking
+  // Primary signal: the provider's /list endpoint (authoritative
+  // list of tracked channels). Falls back to a stats/today-log
+  // probe only if /list isn't usable on that host.
+  // =========================================================
+
+  function ledClassForState(state) {
+    if (state === 'checking') return 'led checking';
+    if (state === 'available') return 'led on-green';
+    if (state === 'idle') return 'led';
+    return 'led on-red'; // nologs + blocked
+  }
+  function setProviderState(idx, state) {
+    providerStatuses[idx] = state;
+    const cls = ledClassForState(state);
+    providerOptionEls[idx].ledEl.className = cls;
+    if (idx === selectedProviderIdx) providerBtnLed.className = cls;
+  }
+
+  function parseChannelList(data) {
+    const set = new Set();
+    const addName = v => { if (typeof v === 'string' && v.trim()) set.add(v.trim().toLowerCase()); };
+    const walk = node => {
+      if (Array.isArray(node)) {
+        node.forEach(item => {
+          if (typeof item === 'string') addName(item);
+          else if (item && typeof item === 'object') {
+            addName(item.name || item.channel || item.login || item.channelName || item.username || item.channelLogin);
+          }
+        });
+      } else if (node && typeof node === 'object') {
+        const arr = node.channels || node.data || node.list || node.results;
+        if (Array.isArray(arr)) { walk(arr); return; }
+        Object.keys(node).forEach(addName);
+      }
+    };
+    walk(data);
+    return set;
+  }
+
+  async function getProviderChannelList(hostIdx) {
+    if (channelListCache.has(hostIdx)) return channelListCache.get(hostIdx);
+    if (channelListPromises.has(hostIdx)) return channelListPromises.get(hostIdx);
+    const p = (async () => {
+      try {
+        const res = await fetchWithTimeout(`https://${PROVIDERS[hostIdx].host}/list`, 8000);
+        if (!res.ok) return null; // do not cache a failure, allow retry on a later check
+        const data = await res.json();
+        const set = parseChannelList(data);
+        if (set.size) { channelListCache.set(hostIdx, set); return set; }
+        return null;
+      } catch (_) {
+        return null;
+      } finally {
+        channelListPromises.delete(hostIdx);
+      }
+    })();
+    channelListPromises.set(hostIdx, p);
+    return p;
+  }
+
+  async function probeChannelFallback(host, channel) {
+    try {
+      const res = await fetchWithTimeout(`https://${host}/channel/${encodeURIComponent(channel)}/stats`, 7000);
+      if (res.status === 404) return { status: 'no-logs' };
+      if (res.ok) return { status: 'available' };
+    } catch (_) { /* fall through */ }
+    try {
+      const today = new Date();
+      const url = `https://${host}/channel/${encodeURIComponent(channel)}/${today.getFullYear()}/${today.getMonth() + 1}/${today.getDate()}`;
+      const res = await fetchWithTimeout(url, 7000);
+      if (res.status === 404) return { status: 'no-logs' };
+      if (res.ok) return { status: 'available' };
+      return { status: 'blocked' };
+    } catch (_) {
+      return { status: 'blocked' };
+    }
+  }
+
+  async function checkProviderChannel(hostIdx, channel) {
+    const list = await getProviderChannelList(hostIdx);
+    if (list) return { status: list.has(channel.toLowerCase()) ? 'available' : 'no-logs' };
+    return probeChannelFallback(PROVIDERS[hostIdx].host, channel);
+  }
+
+  async function runChannelCheck(channel) {
+    const token = ++channelCheckToken;
+    channelInput.classList.remove('error');
+    channelInput.classList.add('checking');
+    channelError.style.display = 'none';
+    PROVIDERS.forEach((_, i) => setProviderState(i, 'checking'));
+
+    const checks = PROVIDERS.map((p, i) =>
+      checkProviderChannel(i, channel)
+        .then(r => {
+          if (token === channelCheckToken) setProviderState(i, r.status === 'available' ? 'available' : r.status === 'no-logs' ? 'nologs' : 'blocked');
+          return r;
+        })
+        .catch(() => { if (token === channelCheckToken) setProviderState(i, 'blocked'); return { status: 'blocked' }; })
+    );
+
+    const results = await Promise.all(checks);
+    if (token !== channelCheckToken) return null;
+
+    channelInput.classList.remove('checking');
+    const availableIdx = [];
+    results.forEach((r, i) => { if (r.status === 'available') availableIdx.push(i); });
+
+    if (availableIdx.length === 0) {
+      channelInput.classList.add('error');
+      channelError.textContent = 'Channel not found in any log provider. Check the spelling, or it may not be logged anywhere.';
+      channelError.style.display = 'block';
+      return { ok: false };
+    }
+
+    channelError.style.display = 'none';
+    const bestIdx = availableIdx[0];
+    if (!availableIdx.includes(selectedProviderIdx)) {
+      selectProvider(bestIdx);
+      autoSwitchNote.textContent = `Auto-selected ${PROVIDERS[bestIdx].label}: best available provider for this channel.`;
+      autoSwitchNote.style.display = 'block';
+    } else {
+      autoSwitchNote.style.display = 'none';
+    }
+    return { ok: true, bestIdx };
+  }
+
+  async function ensureChecked(channel) {
+    if (lastCheckedChannel === channel && lastCheckResult) return lastCheckResult;
+    const res = await runChannelCheck(channel);
+    if (res && res.ok) { lastCheckedChannel = channel; lastCheckResult = res; }
+    else { lastCheckedChannel = null; lastCheckResult = null; }
+    return res;
+  }
+
+  let channelDebounceTimer = null;
+  channelInput.addEventListener('input', () => {
+    clearTimeout(channelDebounceTimer);
+    const val = channelInput.value.trim();
+    if (!val) {
+      channelInput.classList.remove('error', 'checking');
+      channelError.style.display = 'none';
+      autoSwitchNote.style.display = 'none';
+      PROVIDERS.forEach((_, i) => setProviderState(i, 'idle'));
+      lastCheckedChannel = null;
+      lastCheckResult = null;
+      return;
+    }
+    channelDebounceTimer = setTimeout(() => ensureChecked(val.replace(/^@/, '').toLowerCase()), 700);
+  });
+  channelInput.addEventListener('blur', () => {
+    const val = channelInput.value.trim();
+    if (val) ensureChecked(val.replace(/^@/, '').toLowerCase());
+  });
+
+  // =========================================================
+  // Fetching + caching
+  // =========================================================
+
+  async function fetchDay(host, channel, year, month, day) {
+    const key = `${host}|${channel}|${year}-${month}-${day}`;
+    if (logCache.has(key)) return logCache.get(key);
+    const url = `https://${host}/channel/${encodeURIComponent(channel)}/${year}/${month}/${day}`;
+    const res = await fetchWithTimeout(url, 25000);
+    let result;
+    if (res.status === 404) {
+      result = { status: 'empty', raw: '', lines: [] };
+    } else if (!res.ok) {
+      result = { status: 'error', raw: '', lines: [], message: `HTTP ${res.status}` };
+    } else {
+      const text = await res.text();
+      const lines = text.split('\n').filter(l => l.trim().length > 0);
+      result = lines.length ? { status: 'ok', raw: text, lines } : { status: 'empty', raw: '', lines: [] };
+    }
+    if (result.status !== 'error') logCache.set(key, result);
+    return result;
+  }
+
+  async function fetchUserMonth(host, channel, username, year, month) {
+    const key = `${host}|${channel}|user:${username.toLowerCase()}|${year}-${month}`;
+    if (logCache.has(key)) return logCache.get(key);
+    const url = `https://${host}/channel/${encodeURIComponent(channel)}/user/${encodeURIComponent(username)}/${year}/${month}`;
+    const res = await fetchWithTimeout(url, 25000);
+    let result;
+    if (res.status === 404) {
+      result = { status: 'empty', raw: '', lines: [] };
+    } else if (!res.ok) {
+      result = { status: 'error', raw: '', lines: [], message: `HTTP ${res.status}` };
+    } else {
+      const text = await res.text();
+      const lines = text.split('\n').filter(l => l.trim().length > 0);
+      result = lines.length ? { status: 'ok', raw: text, lines } : { status: 'empty', raw: '', lines: [] };
+    }
+    if (result.status !== 'error') logCache.set(key, result);
+    return result;
+  }
+
+  // Renders lines into `container` as one text block (fast, no per-line DOM nodes).
+  // Returns the number of visible lines.
+  function renderDayBody(container, lines, filterQuery) {
+    const pre = document.createElement('pre');
+    pre.className = 'log-lines';
+    if (!filterQuery) {
+      pre.textContent = lines.join('\n');
+      container.appendChild(pre);
+      return lines.length;
+    }
+    const q = filterQuery.toLowerCase();
+    const matched = lines.filter(l => l.toLowerCase().includes(q));
+    if (matched.length) {
+      const escQ = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`(${escQ})`, 'ig');
+      pre.innerHTML = matched.map(l => escapeHtml(l).replace(re, '<mark>$1</mark>')).join('\n');
+    }
+    container.appendChild(pre);
+    return matched.length;
+  }
+
+  // Builds one item's (day, or month in user mode) header+body skeleton.
+  // `collapsedMode` adds a chevron and starts the body hidden (Month/Year boxed
+  // view); otherwise the body shows as soon as it's filled (Day view & filtered mode).
+  function buildSkeletonBlock(item, collapsedMode) {
+    const el = document.createElement('div');
+    el.className = 'day-block';
+
+    const header = document.createElement('div');
+    header.className = 'day-header';
+
+    const left = document.createElement('span');
+    left.className = 'day-header-left';
+    let chevronEl = null;
+    if (collapsedMode) {
+      chevronEl = document.createElement('span');
+      chevronEl.className = 'chevron';
+      chevronEl.textContent = '\u25B8';
+      chevronEl.style.visibility = 'hidden';
+      left.appendChild(chevronEl);
+    }
+    const dateSpan = document.createElement('span');
+    dateSpan.innerHTML = `<span class="date">${labelForItem(item)}</span>`;
+    left.appendChild(dateSpan);
+
+    const right = document.createElement('span');
+    right.className = 'meta';
+    right.textContent = '...';
+
+    header.appendChild(left);
+    header.appendChild(right);
+    el.appendChild(header);
+
+    const bodyEl = document.createElement('div');
+    if (collapsedMode) bodyEl.style.display = 'none';
+    el.appendChild(bodyEl);
+
+    return { el, header, headerRight: right, bodyEl, chevronEl, expandableOk: false, expanded: false, rendered: false };
+  }
+
+  function attachCollapseHandler(slot, idx) {
+    slot.header.addEventListener('click', () => {
+      if (!slot.expandableOk) return;
+      slot.expanded = !slot.expanded;
+      if (slot.chevronEl) slot.chevronEl.textContent = slot.expanded ? '\u25BE' : '\u25B8';
+      if (slot.expanded && !slot.rendered) {
+        const result = dayResults[idx];
+        if (result && result.status === 'ok') renderDayBody(slot.bodyEl, result.lines, '');
+        slot.rendered = true;
+      }
+      slot.bodyEl.style.display = slot.expanded ? '' : 'none';
+    });
+  }
+
+  // Header-only update for boxed/collapsed mode: the heavy log text is only
+  // built when the user actually clicks to expand that item.
+  function fillSlotCollapsed(slot, result) {
+    slot.headerRight.className = 'meta ' + (result.status === 'ok' ? 'ok' : result.status === 'empty' ? 'empty' : 'error');
+    slot.headerRight.textContent = result.status === 'ok' ? `${result.lines.length} lines`
+                                  : result.status === 'empty' ? 'no logs'
+                                  : (result.message || 'error');
+    if (result.status === 'ok') {
+      slot.expandableOk = true;
+      slot.header.classList.add('expandable');
+      if (slot.chevronEl) slot.chevronEl.style.visibility = 'visible';
+    } else {
+      slot.bodyEl.innerHTML = '';
+      const note = document.createElement('div');
+      note.className = result.status === 'empty' ? 'day-empty-note' : 'day-error-note';
+      note.textContent = result.status === 'empty' ? 'No logs recorded for this period.' : `Could not load this item (${result.message || 'unknown error'}).`;
+      slot.bodyEl.appendChild(note);
+      slot.bodyEl.style.display = '';
+    }
+  }
+
+  // Full immediate render, used for Day view (single item, cheap), the single
+  // month result in user-mode Month view, and the filtered/flat mode where the
+  // filter box should bypass all collapsing.
+  function fillSlotExpanded(slot, result, filterQuery) {
+    slot.headerRight.className = 'meta ' + (result.status === 'ok' ? 'ok' : result.status === 'empty' ? 'empty' : 'error');
+    slot.headerRight.textContent = result.status === 'ok' ? `${result.lines.length} lines`
+                                  : result.status === 'empty' ? 'no logs'
+                                  : (result.message || 'error');
+    slot.bodyEl.innerHTML = '';
+    let visibleCount = 0;
+    if (result.status === 'ok') {
+      visibleCount = renderDayBody(slot.bodyEl, result.lines, filterQuery);
+    } else if (result.status === 'empty') {
+      const note = document.createElement('div');
+      note.className = 'day-empty-note';
+      note.textContent = 'No logs recorded for this period.';
+      slot.bodyEl.appendChild(note);
+    } else {
+      const note = document.createElement('div');
+      note.className = 'day-error-note';
+      note.textContent = `Could not load this item (${result.message || 'unknown error'}).`;
+      slot.bodyEl.appendChild(note);
+    }
+    const shouldHide = !!filterQuery && (result.status !== 'ok' || visibleCount === 0);
+    slot.el.style.display = shouldHide ? 'none' : '';
+  }
+
+  function buildMonthDividerStatic(year, month) {
+    const mh = document.createElement('div');
+    mh.className = 'month-divider';
+    mh.textContent = `${MONTHS[month - 1]} ${year}`;
+    return mh;
+  }
+
+  function buildMonthGroupsFromList(list) {
+    const groups = [];
+    let cur = null;
+    list.forEach((item, i) => {
+      const key = `${item.year}-${item.month}`;
+      if (!cur || cur.key !== key) { cur = { key, year: item.year, month: item.month, indices: [] }; groups.push(cur); }
+      cur.indices.push(i);
+    });
+    return groups;
+  }
+
+  // Populates item skeletons for the given absolute indices into `container`,
+  // in the current display order, wiring each up as click-to-expand.
+  function buildDayRowsInto(container, indices) {
+    const order = reverseOrder ? indices.slice().reverse() : indices;
+    order.forEach(i => {
+      const slot = buildSkeletonBlock(dateList[i], true);
+      attachCollapseHandler(slot, i);
+      slotEls[i] = slot;
+      container.appendChild(slot.el);
+      if (dayResults[i]) fillSlotCollapsed(slot, dayResults[i]);
+    });
+  }
+
+  function buildMonthGroupBox(g) {
+    const el = document.createElement('div');
+    el.className = 'month-box';
+
+    const header = document.createElement('div');
+    header.className = 'month-box-header';
+
+    const left = document.createElement('span');
+    left.className = 'month-box-left';
+    const chevron = document.createElement('span');
+    chevron.className = 'chevron';
+    chevron.textContent = '\u25B8';
+    const title = document.createElement('span');
+    title.textContent = `${MONTHS[g.month - 1]} ${g.year}`;
+    left.appendChild(chevron);
+    left.appendChild(title);
+
+    const right = document.createElement('span');
+    right.className = 'month-box-meta';
+    right.textContent = 'loading...';
+
+    header.appendChild(left);
+    header.appendChild(right);
+    el.appendChild(header);
+
+    const bodyContainer = document.createElement('div');
+    bodyContainer.className = 'month-box-body';
+    bodyContainer.style.display = 'none';
+    el.appendChild(bodyContainer);
+
+    const state = { el, headerRight: right, chevronEl: chevron, bodyContainer, indices: g.indices, expanded: false, builtRows: false };
+
+    header.addEventListener('click', () => {
+      state.expanded = !state.expanded;
+      chevron.textContent = state.expanded ? '\u25BE' : '\u25B8';
+      bodyContainer.style.display = state.expanded ? '' : 'none';
+      if (state.expanded && !state.builtRows) {
+        buildDayRowsInto(bodyContainer, state.indices);
+        state.builtRows = true;
+      }
+    });
+
+    return state;
+  }
+
+  function updateGroupHeader(gi) {
+    const group = monthGroups[gi];
+    if (!group) return;
+    let doneCount = 0, okCount = 0, lineTotal = 0;
+    group.indices.forEach(i => {
+      const r = dayResults[i];
+      if (r) { doneCount++; if (r.status === 'ok') { okCount++; lineTotal += r.lines.length; } }
+    });
+    const allDone = doneCount === group.indices.length;
+    group.headerRight.textContent = allDone
+      ? `${okCount}/${group.indices.length} days, ${lineTotal} lines`
+      : `loading... ${doneCount}/${group.indices.length}`;
+  }
+
+  // Rebuilds #main to reflect currentView / reverseOrder / filter / user-mode,
+  // using only already-cached dateList/dayResults (no network calls).
+  function renderMain() {
+    main.innerHTML = '';
+    slotEls = new Array(dateList.length).fill(null);
+    monthGroups = [];
+    idxToGroup = new Array(dateList.length).fill(-1);
+    const q = filterInput.value.trim();
+
+    const flatMode = currentView === 'day' || (currentUserMode && currentView === 'month') || q;
+
+    if (flatMode) {
+      let lastMonthKey = null;
+      const order = dateList.map((_, i) => i);
+      if (reverseOrder) order.reverse();
+      order.forEach(i => {
+        const item = dateList[i];
+        if (currentView === 'year' && q && !currentUserMode) {
+          const key = `${item.year}-${item.month}`;
+          if (key !== lastMonthKey) { main.appendChild(buildMonthDividerStatic(item.year, item.month)); lastMonthKey = key; }
+        }
+        const slot = buildSkeletonBlock(item, false);
+        slotEls[i] = slot;
+        main.appendChild(slot.el);
+        if (dayResults[i]) fillSlotExpanded(slot, dayResults[i], q);
+      });
+      return;
+    }
+
+    if (currentView === 'month' || (currentUserMode && currentView === 'year')) {
+      buildDayRowsInto(main, dateList.map((_, i) => i));
+      return;
+    }
+
+    // channel-mode Year view, no filter: collapsible month boxes containing collapsible day rows
+    const groupsRaw = buildMonthGroupsFromList(dateList);
+    groupsRaw.forEach((g, gi) => g.indices.forEach(i => idxToGroup[i] = gi));
+    monthGroups = new Array(groupsRaw.length);
+    const displayOrderGroups = reverseOrder ? groupsRaw.slice().reverse() : groupsRaw;
+    displayOrderGroups.forEach(g => {
+      const gi = groupsRaw.indexOf(g);
+      const state = buildMonthGroupBox(g);
+      monthGroups[gi] = state;
+      main.appendChild(state.el);
+    });
+    groupsRaw.forEach((_, gi) => updateGroupHeader(gi));
+  }
+
+  let filterDebounceTimer = null;
+  filterInput.addEventListener('input', () => {
+    clearTimeout(filterDebounceTimer);
+    filterDebounceTimer = setTimeout(() => { if (dateList.length) renderMain(); }, 200);
+  });
+
+  function setFooterLoading(completed, total, ok) {
+    summaryPulse.style.display = 'inline-block';
+    summaryText.textContent = `Loading ${currentChannel}... ${completed}/${total} fetched (${ok} with logs so far)`;
+  }
+  function setFooterDone(text) {
+    summaryPulse.style.display = 'none';
+    summaryText.textContent = text;
+  }
+
+  // Pure rendering update for one resolved item; data assignment happens in the
+  // caller so a rendering exception here can never leave dayResults incomplete.
+  function updateDisplayForResult(idx, result) {
+    const q = filterInput.value.trim();
+    if (currentView === 'day' || (currentUserMode && currentView === 'month') || q) {
+      if (slotEls[idx]) fillSlotExpanded(slotEls[idx], result, q);
+    } else if (currentView === 'month' || (currentUserMode && currentView === 'year')) {
+      if (slotEls[idx]) fillSlotCollapsed(slotEls[idx], result);
+    } else {
+      if (slotEls[idx]) fillSlotCollapsed(slotEls[idx], result);
+      const gi = idxToGroup[idx];
+      if (gi !== undefined && gi >= 0) updateGroupHeader(gi);
+    }
+  }
+
+  // Build the chronological list of {year, month, day} to fetch for channel-wide logs.
+  function buildDateList(view) {
+    const today = new Date();
+    const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+
+    if (view === 'day') {
+      const raw = dayInput.value;
+      if (!raw) return { list: [], isFuture: false, label: '', invalid: true };
+      const [y, m, d] = raw.split('-').map(n => parseInt(n, 10));
+      const target = new Date(y, m - 1, d);
+      const isFuture = target > todayMidnight;
+      const label = `${MONTHS[m-1]} ${d}, ${y}`;
+      return { list: isFuture ? [] : [{ year: y, month: m, day: d }], isFuture, label };
+    }
+
+    if (view === 'month') {
+      const year = parseInt(yearInput.value, 10);
+      const month = parseInt(monthSelect.value, 10);
+      const fullDays = daysInMonth(year, month);
+      const selectedMonthStart = new Date(year, month - 1, 1);
+      const isCurrentMonth = year === today.getFullYear() && month === today.getMonth() + 1;
+      const isFuture = selectedMonthStart > todayMidnight && !isCurrentMonth;
+      let total;
+      if (isFuture) total = 0;
+      else if (isCurrentMonth) total = today.getDate();
+      else total = fullDays;
+      const list = Array.from({ length: total }, (_, i) => ({ year, month, day: i + 1 }));
+      const label = `${MONTHS[month-1]} ${year}`;
+      const inProgressNote = (isCurrentMonth && total < fullDays)
+        ? ` (${label} is still in progress: showing through the ${total}${ordinal(total)}. Reload later for more.)`
+        : '';
+      return { list, isFuture, label, inProgressNote };
+    }
+
+    const year = parseInt(yearInput.value, 10);
+    const isFutureYear = year > today.getFullYear();
+    const isCurrentYear = year === today.getFullYear();
+    let list = [];
+    if (!isFutureYear) {
+      for (let m = 1; m <= 12; m++) {
+        if (isCurrentYear && m > today.getMonth() + 1) break;
+        const dim = daysInMonth(year, m);
+        const limit = (isCurrentYear && m === today.getMonth() + 1) ? today.getDate() : dim;
+        for (let d = 1; d <= limit; d++) list.push({ year, month: m, day: d });
+      }
+    }
+    const label = `${year}`;
+    const fullDaysInYear = (new Date(year, 11, 31) - new Date(year, 0, 1)) / 86400000 + 1;
+    const inProgressNote = (isCurrentYear && list.length < fullDaysInYear)
+      ? ` (${year} is still in progress: showing through today. Reload later for more.)`
+      : '';
+    return { list, isFuture: isFutureYear, label, inProgressNote };
+  }
+
+  // Build the chronological list of {year, month} to fetch for a single user's
+  // logs in a channel. These providers only expose per-user logs by month.
+  function buildDateListUserMode(view) {
+    const today = new Date();
+    const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const effectiveView = view === 'day' ? 'month' : view; // Day isn't offered, but guard anyway
+
+    if (effectiveView === 'month') {
+      const year = parseInt(yearInput.value, 10);
+      const month = parseInt(monthSelect.value, 10);
+      const monthStart = new Date(year, month - 1, 1);
+      const isCurrentMonth = year === today.getFullYear() && month === today.getMonth() + 1;
+      const isFuture = monthStart > todayMidnight && !isCurrentMonth;
+      const label = `${MONTHS[month-1]} ${year}`;
+      return { list: isFuture ? [] : [{ year, month, day: null }], isFuture, label };
+    }
+
+    const year = parseInt(yearInput.value, 10);
+    const isFutureYear = year > today.getFullYear();
+    const isCurrentYear = year === today.getFullYear();
+    let list = [];
+    if (!isFutureYear) {
+      const lastMonth = isCurrentYear ? today.getMonth() + 1 : 12;
+      for (let m = 1; m <= lastMonth; m++) list.push({ year, month: m, day: null });
+    }
+    const label = `${year}`;
+    const inProgressNote = (isCurrentYear && list.length < 12)
+      ? ` (${year} is still in progress: showing through the current month. Reload later for more.)`
+      : '';
+    return { list, isFuture: isFutureYear, label, inProgressNote };
+  }
+
+  async function loadRange() {
+    const channel = channelInput.value.trim().replace(/^@/, '').toLowerCase();
+    if (!channel) { channelInput.focus(); return; }
+    const username = usernameInput.value.trim().replace(/^@/, '');
+    const userMode = !!username;
+
+    loadBtn.disabled = true;
+    const check = await ensureChecked(channel);
+    if (!check || !check.ok) {
+      loadBtn.disabled = false;
+      showEmptyState(`<div>Fix the channel name above before loading. See the error under the field.</div>`);
+      setFooterDone('Channel not found in any provider.');
+      return;
+    }
+
+    const provider = PROVIDERS[selectedProviderIdx];
+    const host = provider.host; // captured locally so a mid-load provider switch can't mix hosts
+    currentLabel = provider.label;
+    corsHost.textContent = provider.host;
+    sourceLabel.textContent = `Data source: ${provider.host} (unofficial, third-party)`;
+
+    const { list, isFuture, label, inProgressNote, invalid } = userMode ? buildDateListUserMode(currentView) : buildDateList(currentView);
+
+    currentChannel = channel;
+    currentUsername = username;
+    currentUserMode = userMode;
+    dateList = list;
+    dayResults = new Array(list.length).fill(null);
+
+    downloadBtn.disabled = true;
+    corsBanner.classList.remove('visible');
+
+    if (invalid) {
+      loadBtn.disabled = false;
+      showEmptyState(`<div>Pick a valid date first.</div>`);
+      setFooterDone('No date selected.');
+      return;
+    }
+    if (isFuture || list.length === 0) {
+      loadBtn.disabled = false;
+      showEmptyState(`<div>${label} hasn't happened yet. Nothing to load.</div>`);
+      setFooterDone(`${label} is in the future.`);
+      downloadBtn.disabled = true;
+      return;
+    }
+
+    const total = list.length;
+    loading = true;
+    setControlsDisabled(true);
+    reverseBtn.disabled = true;
+    statusBar.classList.add('visible');
+    statusText.textContent = `Loading ${channel} from ${provider.label}`;
+    progressFill.style.width = '0%';
+    progressPct.textContent = '0%';
+    setFooterLoading(0, total, 0);
+
+    renderMain(); // paints skeleton (boxes collapsed, or flat placeholders) immediately
+
+    let fatalNetworkError = null;
+    let completed = 0, okSoFar = 0;
+
+    try {
+      const CONCURRENCY = 8;
+      const queue = list.map((_, i) => i);
+
+      async function worker() {
+        while (queue.length) {
+          const idx = queue.shift();
+          const item = list[idx];
+          let result;
+          try {
+            result = userMode
+              ? await fetchUserMonth(host, channel, username, item.year, item.month)
+              : await fetchDay(host, channel, item.year, item.month, item.day);
+          } catch (err) {
+            result = { status: 'error', raw: '', lines: [], message: 'network/CORS error' };
+            if (!fatalNetworkError) fatalNetworkError = err;
+          }
+          dayResults[idx] = result;
+          if (result.status === 'ok') okSoFar++;
+          try {
+            updateDisplayForResult(idx, result);
+          } catch (renderErr) {
+            console.error('OmniLogs: display update failed for item', idx, renderErr);
+          }
+          completed++;
+          const pct = Math.round((completed / total) * 100);
+          statusText.textContent = `Loading ${channel} from ${provider.label} (${completed} / ${total})`;
+          progressPct.textContent = `${pct}%`;
+          progressFill.style.width = `${pct}%`;
+          setFooterLoading(completed, total, okSoFar);
+        }
+      }
+
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, worker));
+    } catch (err) {
+      console.error('OmniLogs: unexpected error during load', err);
+    } finally {
+      loading = false;
+      statusBar.classList.remove('visible');
+      loadBtn.disabled = false;
+      reverseBtn.disabled = false;
+      setControlsDisabled(false);
+    }
+
+    // Normalize in case anything above ended early: every index should have a result.
+    dayResults = dayResults.map(r => r || { status: 'error', raw: '', lines: [], message: 'did not finish loading' });
+
+    const allFailed = dayResults.every(r => r.status === 'error');
+    if (allFailed && fatalNetworkError) {
+      corsBanner.classList.add('visible');
+      showEmptyState(`<div>Load failed for every item. See the notice above.</div>`);
+      setFooterDone('Load failed, see notice above.');
+      return;
+    }
+
+    const okDays = dayResults.filter(r => r.status === 'ok').length;
+    const totalLines = dayResults.reduce((sum, r) => r.status === 'ok' ? sum + r.lines.length : sum, 0);
+
+    if (okDays === 0) {
+      const msg = userMode
+        ? `<div>No logs found for user ${username} in ${channel} on ${provider.label} for ${label}.</div>
+           <div style="font-size:11px;max-width:440px;">They may not have chatted there during this period,
+           or this provider may not have data that far back. Try a different provider, or double-check the
+           username.</div>`
+        : `<div>No chat logs found for ${channel} on ${provider.label} for ${label}.</div>
+           <div style="font-size:11px;max-width:440px;">The channel may not have been tracked by this
+           provider during this period, or may have opted out of logging. Try a different provider
+           (dropdown above) if one is available.</div>`;
+      showEmptyState(msg);
+      setFooterDone(userMode
+        ? `${username} in ${channel}: 0/${total} had logs on ${provider.label}.`
+        : `${channel}: 0/${total} days had logs on ${provider.label}.`);
+      downloadBtn.disabled = true;
+      window._logSplicerLabel = label;
+      return;
+    }
+
+    const who = userMode ? `${username} in ${channel}` : channel;
+    setFooterDone(`${who}, ${label} (${provider.label}): ${okDays}/${total} with logs, ${totalLines} lines total.${inProgressNote || ''}`);
+    downloadBtn.disabled = totalLines === 0;
+    window._logSplicerLabel = label;
+  }
+
+  function downloadTxt() {
+    const label = window._logSplicerLabel || '';
+    const who = currentUserMode ? `${currentUsername} in ${currentChannel}` : currentChannel;
+    let out = `Logs for ${who}, ${label}\n`;
+    out += `Order: ${reverseOrder ? 'Newest to oldest' : 'Oldest to newest'}\n\n`;
+    const indices = dateList.map((_, i) => i);
+    if (reverseOrder) indices.reverse();
+    indices.forEach(i => {
+      const item = dateList[i];
+      const result = dayResults[i];
+      out += `\n===== ${labelForItem(item)} =====\n`;
+      if (result.status === 'ok') out += result.raw.trim() + '\n';
+      else if (result.status === 'empty') out += '(no logs)\n';
+      else out += `(error: ${result.message || 'unknown'})\n`;
+    });
+    const blob = new Blob([out], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeLabel = label.replace(/\s+/g, '-').replace(/[^\w\-,]/g, '');
+    const safeWho = who.replace(/\s+/g, '-').replace(/[^\w\-,]/g, '');
+    a.download = `${safeWho}-${safeLabel}-logs.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  loadBtn.addEventListener('click', loadRange);
+  channelInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadRange(); });
+  usernameInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadRange(); });
+  downloadBtn.addEventListener('click', downloadTxt);
+})();
+</script>
+</body>
+</html>
