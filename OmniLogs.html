@@ -46,7 +46,22 @@
     align-items: center;
     margin-right: 14px;
     align-self: center;
+    cursor: pointer;
+    transition: filter 0.2s;
   }
+  .brand-wrap:hover {
+    filter: drop-shadow(0 0 6px var(--accent)) drop-shadow(0 0 12px var(--accent-dim));
+    animation: glitch 0.3s steps(1) infinite;
+  }
+  @keyframes glitch {
+    0% { transform: translate(0); }
+    20% { transform: translate(-2px, 1px); }
+    40% { transform: translate(2px, -1px); }
+    60% { transform: translate(-1px, 2px); }
+    80% { transform: translate(1px, -2px); }
+    100% { transform: translate(0); }
+  }
+
   .brand {
     font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
     font-weight: 800;
@@ -105,7 +120,6 @@
   input#year { width: 76px; }
   input#day { width: 150px; }
 
-  /* LED-style availability dots + custom provider picker */
   .led {
     width: 7px; height: 7px; border-radius: 50%;
     background: #3a3a44;
@@ -126,7 +140,13 @@
     cursor: pointer;
     font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   }
-  .provider-picker-btn .caret { margin-left: auto; color: var(--muted); font-size: 10px; }
+  .provider-picker-btn .caret {
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 14px;
+    transition: transform 0.25s ease;
+  }
+  .provider-picker-btn.open .caret { transform: rotate(180deg); }
   .provider-picker-menu {
     display: none;
     position: absolute;
@@ -262,7 +282,6 @@
   }
   @keyframes blink { 50% { opacity: 0; } }
 
-  /* static month divider, used only in filtered/flat mode */
   .month-divider {
     background: var(--panel-2);
     border-bottom: 1px solid var(--border);
@@ -274,7 +293,6 @@
     color: var(--accent);
   }
 
-  /* collapsible month box, used in channel-mode Year view when not filtering */
   .month-box { border-bottom: 1px solid var(--border); }
   .month-box-header {
     cursor: pointer;
@@ -292,10 +310,13 @@
 
   .chevron {
     display: inline-block;
-    width: 14px;
-    font-size: 13px;
+    width: 18px;
+    font-size: 18px;
     color: var(--accent);
+    transition: transform 0.2s ease;
+    text-align: center;
   }
+  .chevron.expanded { transform: rotate(90deg); }
 
   .day-block { border-bottom: 1px solid var(--border); }
 
@@ -312,7 +333,7 @@
     justify-content: space-between;
     z-index: 5;
   }
-  .day-header-left { display: flex; align-items: center; gap: 4px; }
+  .day-header-left { display: flex; align-items: center; gap: 6px; }
   .day-header.expandable { cursor: pointer; }
   .day-header.expandable:hover { background: #1a1a22; }
   .day-header .date { color: var(--text); font-weight: 600; }
@@ -371,7 +392,7 @@
 <body>
 <div class="app">
   <header>
-    <div class="brand-wrap">
+    <div class="brand-wrap" id="brandWrap">
       <div class="brand"><span class="accent">Omni</span>Logs</div>
     </div>
 
@@ -423,15 +444,15 @@
     </div>
 
     <div class="field">
-      <label>&nbsp;</label>
+      <label>Sort</label>
       <button class="secondary toggle-btn" id="reverseBtn" type="button">
-        <span class="arrow" id="reverseArrow">&darr;</span><span id="reverseLabel">Oldest to Newest</span>
+        <span class="arrow" id="reverseArrow">&uarr;</span><span id="reverseLabel">Newest to Oldest</span>
       </button>
     </div>
 
     <div class="field">
       <label>&nbsp;</label>
-      <button class="primary" id="loadBtn">Load month</button>
+      <button class="primary" id="loadBtn">LOAD</button>
     </div>
 
     <div class="spacer"></div>
@@ -439,11 +460,6 @@
     <div class="field">
       <label for="filter">Filter</label>
       <input id="filter" type="text" placeholder="text..." spellcheck="false" autocomplete="off">
-    </div>
-
-    <div class="field">
-      <label>&nbsp;</label>
-      <button class="secondary" id="downloadBtn" disabled>Download .txt</button>
     </div>
   </header>
 
@@ -505,7 +521,6 @@
   const usernameInput = document.getElementById('username');
   const loadBtn = document.getElementById('loadBtn');
   const filterInput = document.getElementById('filter');
-  const downloadBtn = document.getElementById('downloadBtn');
   const main = document.getElementById('main');
   const statusBar = document.getElementById('statusBar');
   const statusText = document.getElementById('statusText');
@@ -525,6 +540,7 @@
   const reverseArrow = document.getElementById('reverseArrow');
   const reverseLabel = document.getElementById('reverseLabel');
   const autoSwitchNote = document.getElementById('autoSwitchNote');
+  const brandWrap = document.getElementById('brandWrap');
 
   const MONTHS = ["January","February","March","April","May","June",
                   "July","August","September","October","November","December"];
@@ -535,7 +551,7 @@
     monthSelect.appendChild(opt);
   });
 
-  // Custom provider picker (a native <select> cannot style per-option LED dots)
+  // Custom provider picker
   let selectedProviderIdx = 0;
   const providerOptionEls = PROVIDERS.map((p, i) => {
     const row = document.createElement('div');
@@ -564,37 +580,42 @@
   function toggleProviderMenu() {
     if (providerBtn.disabled) return;
     providerMenu.classList.toggle('open');
+    providerBtn.classList.toggle('open');
   }
-  function closeProviderMenu() { providerMenu.classList.remove('open'); }
+  function closeProviderMenu() {
+    providerMenu.classList.remove('open');
+    providerBtn.classList.remove('open');
+  }
   providerBtn.addEventListener('click', toggleProviderMenu);
   document.addEventListener('click', e => { if (!providerPicker.contains(e.target)) closeProviderMenu(); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeProviderMenu(); });
   selectProvider(0);
 
-  const pageLoadDate = new Date();
-  monthSelect.value = pageLoadDate.getMonth() + 1;
-  yearInput.value = pageLoadDate.getFullYear();
-  dayInput.value = `${pageLoadDate.getFullYear()}-${pad(pageLoadDate.getMonth() + 1)}-${pad(pageLoadDate.getDate())}`;
+  // Default date: 2026-01-01
+  const defaultDate = new Date(2026, 0, 1);
+  monthSelect.value = 1;
+  yearInput.value = 2026;
+  dayInput.value = '2026-01-01';
 
   let currentView = 'month';
-  let reverseOrder = false;
+  let reverseOrder = true; // Newest to Oldest by default
   let currentChannel = '';
   let currentUsername = '';
   let currentUserMode = false;
   let currentLabel = '';
-  let dateList = [];      // [{year, month, day}] chronological ascending, day is null in user mode
-  let dayResults = [];    // parallel to dateList: {status, raw, lines, message}, filled progressively
-  let slotEls = [];       // parallel to dateList: slot object, or null if not built yet (e.g. collapsed month not expanded)
-  let monthGroups = [];   // channel-mode Year view only
-  let idxToGroup = [];    // dateList index -> monthGroups index, channel-mode Year view only
+  let dateList = [];
+  let dayResults = [];
+  let slotEls = [];
+  let monthGroups = [];
+  let idxToGroup = [];
   let loading = false;
 
   let providerStatuses = new Array(PROVIDERS.length).fill('idle');
   let channelCheckToken = 0;
   let lastCheckedChannel = null;
   let lastCheckResult = null;
-  const logCache = new Map();          // cache key -> result
-  const channelListCache = new Map();  // hostIdx -> Set<string>, only successful lookups are cached
+  const logCache = new Map();
+  const channelListCache = new Map();
   const channelListPromises = new Map();
 
   function daysInMonth(year, month) { return new Date(year, month, 0).getDate(); }
@@ -608,7 +629,7 @@
     return new Date(year, month - 1, day).toLocaleDateString(undefined, { weekday: 'short' });
   }
   function labelForItem(item) {
-    if (item.day) {
+    if (item.day !== null && item.day !== undefined) {
       const dateStr = `${item.year}-${pad(item.month)}-${pad(item.day)}`;
       return `${dateStr}  (${dayOfWeek(item.year, item.month, item.day)})`;
     }
@@ -634,9 +655,6 @@
     viewSeg.querySelectorAll('.seg-btn').forEach(b => b.disabled = disabled);
   }
 
-  // A dedicated place to show a message where the log list would go. Built fresh
-  // every time rather than toggling a persisted node, since a persisted node gets
-  // detached the moment main.innerHTML is cleared for the next load.
   function showEmptyState(html) {
     main.innerHTML = `<div class="empty-state">${html}</div>`;
   }
@@ -658,7 +676,7 @@
     dayField.classList.toggle('hidden-field', view !== 'day');
     monthField.classList.toggle('hidden-field', view !== 'month');
     yearField.classList.toggle('hidden-field', view === 'day');
-    loadBtn.textContent = view === 'day' ? 'Load day' : view === 'year' ? 'Load year' : 'Load month';
+    loadBtn.textContent = 'LOAD';
   }
   viewSeg.addEventListener('click', e => {
     const btn = e.target.closest('.seg-btn');
@@ -667,18 +685,20 @@
   });
   setView('month');
 
-  // Per-user lookups only support month granularity on these providers, so Day
-  // view is disabled while a username is entered.
+  // Disable Day view when username is entered
   usernameInput.addEventListener('input', () => {
     const has = !!usernameInput.value.trim();
     daySegBtn.disabled = has;
     daySegBtn.title = has
       ? "Day view isn't available for single-user lookups; these providers only expose per-user logs by month."
       : '';
-    if (has && currentView === 'day') setView('month');
+    if (has && currentView === 'day') {
+      setView('month');
+      // Silently switch, no note
+    }
   });
 
-  // ---- reverse-order toggle: rebuild from already-fetched results, no refetch ----
+  // ---- reverse-order toggle ----
   function setReverse(rev) {
     reverseOrder = rev;
     reverseArrow.innerHTML = rev ? '&uarr;' : '&darr;';
@@ -686,19 +706,17 @@
     if (dateList.length) renderMain();
   }
   reverseBtn.addEventListener('click', () => { if (!loading) setReverse(!reverseOrder); });
+  setReverse(true);
 
   // =========================================================
   // Provider channel-availability checking
-  // Primary signal: the provider's /list endpoint (authoritative
-  // list of tracked channels). Falls back to a stats/today-log
-  // probe only if /list isn't usable on that host.
   // =========================================================
 
   function ledClassForState(state) {
     if (state === 'checking') return 'led checking';
     if (state === 'available') return 'led on-green';
     if (state === 'idle') return 'led';
-    return 'led on-red'; // nologs + blocked
+    return 'led on-red';
   }
   function setProviderState(idx, state) {
     providerStatuses[idx] = state;
@@ -734,7 +752,7 @@
     const p = (async () => {
       try {
         const res = await fetchWithTimeout(`https://${PROVIDERS[hostIdx].host}/list`, 8000);
-        if (!res.ok) return null; // do not cache a failure, allow retry on a later check
+        if (!res.ok) return null;
         const data = await res.json();
         const set = parseChannelList(data);
         if (set.size) { channelListCache.set(hostIdx, set); return set; }
@@ -844,13 +862,24 @@
   });
 
   // =========================================================
-  // Fetching + caching
+  // Fetching + caching (UTC conversion)
   // =========================================================
 
+  // Convert a local date (year, month, day) to UTC year/month/day
+  function toUTC(y, m, d) {
+    const dt = new Date(Date.UTC(y, m-1, d));
+    return {
+      year: dt.getUTCFullYear(),
+      month: dt.getUTCMonth() + 1,
+      day: dt.getUTCDate()
+    };
+  }
+
   async function fetchDay(host, channel, year, month, day) {
-    const key = `${host}|${channel}|${year}-${month}-${day}`;
+    const utc = toUTC(year, month, day);
+    const key = `${host}|${channel}|${utc.year}-${utc.month}-${utc.day}`;
     if (logCache.has(key)) return logCache.get(key);
-    const url = `https://${host}/channel/${encodeURIComponent(channel)}/${year}/${month}/${day}`;
+    const url = `https://${host}/channel/${encodeURIComponent(channel)}/${utc.year}/${utc.month}/${utc.day}`;
     const res = await fetchWithTimeout(url, 25000);
     let result;
     if (res.status === 404) {
@@ -885,8 +914,7 @@
     return result;
   }
 
-  // Renders lines into `container` as one text block (fast, no per-line DOM nodes).
-  // Returns the number of visible lines.
+  // Renders lines into container as one text block.
   function renderDayBody(container, lines, filterQuery) {
     const pre = document.createElement('pre');
     pre.className = 'log-lines';
@@ -906,9 +934,6 @@
     return matched.length;
   }
 
-  // Builds one item's (day, or month in user mode) header+body skeleton.
-  // `collapsedMode` adds a chevron and starts the body hidden (Month/Year boxed
-  // view); otherwise the body shows as soon as it's filled (Day view & filtered mode).
   function buildSkeletonBlock(item, collapsedMode) {
     const el = document.createElement('div');
     el.className = 'day-block';
@@ -949,7 +974,10 @@
     slot.header.addEventListener('click', () => {
       if (!slot.expandableOk) return;
       slot.expanded = !slot.expanded;
-      if (slot.chevronEl) slot.chevronEl.textContent = slot.expanded ? '\u25BE' : '\u25B8';
+      if (slot.chevronEl) {
+        slot.chevronEl.textContent = slot.expanded ? '\u25BE' : '\u25B8';
+        slot.chevronEl.classList.toggle('expanded', slot.expanded);
+      }
       if (slot.expanded && !slot.rendered) {
         const result = dayResults[idx];
         if (result && result.status === 'ok') renderDayBody(slot.bodyEl, result.lines, '');
@@ -959,8 +987,6 @@
     });
   }
 
-  // Header-only update for boxed/collapsed mode: the heavy log text is only
-  // built when the user actually clicks to expand that item.
   function fillSlotCollapsed(slot, result) {
     slot.headerRight.className = 'meta ' + (result.status === 'ok' ? 'ok' : result.status === 'empty' ? 'empty' : 'error');
     slot.headerRight.textContent = result.status === 'ok' ? `${result.lines.length} lines`
@@ -980,9 +1006,6 @@
     }
   }
 
-  // Full immediate render, used for Day view (single item, cheap), the single
-  // month result in user-mode Month view, and the filtered/flat mode where the
-  // filter box should bypass all collapsing.
   function fillSlotExpanded(slot, result, filterQuery) {
     slot.headerRight.className = 'meta ' + (result.status === 'ok' ? 'ok' : result.status === 'empty' ? 'empty' : 'error');
     slot.headerRight.textContent = result.status === 'ok' ? `${result.lines.length} lines`
@@ -1025,8 +1048,6 @@
     return groups;
   }
 
-  // Populates item skeletons for the given absolute indices into `container`,
-  // in the current display order, wiring each up as click-to-expand.
   function buildDayRowsInto(container, indices) {
     const order = reverseOrder ? indices.slice().reverse() : indices;
     order.forEach(i => {
@@ -1073,6 +1094,7 @@
     header.addEventListener('click', () => {
       state.expanded = !state.expanded;
       chevron.textContent = state.expanded ? '\u25BE' : '\u25B8';
+      chevron.classList.toggle('expanded', state.expanded);
       bodyContainer.style.display = state.expanded ? '' : 'none';
       if (state.expanded && !state.builtRows) {
         buildDayRowsInto(bodyContainer, state.indices);
@@ -1097,8 +1119,6 @@
       : `loading... ${doneCount}/${group.indices.length}`;
   }
 
-  // Rebuilds #main to reflect currentView / reverseOrder / filter / user-mode,
-  // using only already-cached dateList/dayResults (no network calls).
   function renderMain() {
     main.innerHTML = '';
     slotEls = new Array(dateList.length).fill(null);
@@ -1131,7 +1151,7 @@
       return;
     }
 
-    // channel-mode Year view, no filter: collapsible month boxes containing collapsible day rows
+    // channel-mode Year view, no filter
     const groupsRaw = buildMonthGroupsFromList(dateList);
     groupsRaw.forEach((g, gi) => g.indices.forEach(i => idxToGroup[i] = gi));
     monthGroups = new Array(groupsRaw.length);
@@ -1160,8 +1180,6 @@
     summaryText.textContent = text;
   }
 
-  // Pure rendering update for one resolved item; data assignment happens in the
-  // caller so a rendering exception here can never leave dayResults incomplete.
   function updateDisplayForResult(idx, result) {
     const q = filterInput.value.trim();
     if (currentView === 'day' || (currentUserMode && currentView === 'month') || q) {
@@ -1175,7 +1193,7 @@
     }
   }
 
-  // Build the chronological list of {year, month, day} to fetch for channel-wide logs.
+  // Build chronological list for channel-wide logs (UTC conversion inside fetch)
   function buildDateList(view) {
     const today = new Date();
     const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
@@ -1229,12 +1247,11 @@
     return { list, isFuture: isFutureYear, label, inProgressNote };
   }
 
-  // Build the chronological list of {year, month} to fetch for a single user's
-  // logs in a channel. These providers only expose per-user logs by month.
+  // Build chronological list for user-mode logs (only month granularity)
   function buildDateListUserMode(view) {
     const today = new Date();
     const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const effectiveView = view === 'day' ? 'month' : view; // Day isn't offered, but guard anyway
+    const effectiveView = view === 'day' ? 'month' : view;
 
     if (effectiveView === 'month') {
       const year = parseInt(yearInput.value, 10);
@@ -1267,6 +1284,12 @@
     const username = usernameInput.value.trim().replace(/^@/, '');
     const userMode = !!username;
 
+    // If userMode and currentView is day, silently switch to month
+    if (userMode && currentView === 'day') {
+      setView('month');
+      // No note, just switch
+    }
+
     loadBtn.disabled = true;
     const check = await ensureChecked(channel);
     if (!check || !check.ok) {
@@ -1277,7 +1300,7 @@
     }
 
     const provider = PROVIDERS[selectedProviderIdx];
-    const host = provider.host; // captured locally so a mid-load provider switch can't mix hosts
+    const host = provider.host;
     currentLabel = provider.label;
     corsHost.textContent = provider.host;
     sourceLabel.textContent = `Data source: ${provider.host} (unofficial, third-party)`;
@@ -1290,7 +1313,6 @@
     dateList = list;
     dayResults = new Array(list.length).fill(null);
 
-    downloadBtn.disabled = true;
     corsBanner.classList.remove('visible');
 
     if (invalid) {
@@ -1303,7 +1325,6 @@
       loadBtn.disabled = false;
       showEmptyState(`<div>${label} hasn't happened yet. Nothing to load.</div>`);
       setFooterDone(`${label} is in the future.`);
-      downloadBtn.disabled = true;
       return;
     }
 
@@ -1317,7 +1338,7 @@
     progressPct.textContent = '0%';
     setFooterLoading(0, total, 0);
 
-    renderMain(); // paints skeleton (boxes collapsed, or flat placeholders) immediately
+    renderMain();
 
     let fatalNetworkError = null;
     let completed = 0, okSoFar = 0;
@@ -1366,7 +1387,6 @@
       setControlsDisabled(false);
     }
 
-    // Normalize in case anything above ended early: every index should have a result.
     dayResults = dayResults.map(r => r || { status: 'error', raw: '', lines: [], message: 'did not finish loading' });
 
     const allFailed = dayResults.every(r => r.status === 'error');
@@ -1394,49 +1414,65 @@
       setFooterDone(userMode
         ? `${username} in ${channel}: 0/${total} had logs on ${provider.label}.`
         : `${channel}: 0/${total} days had logs on ${provider.label}.`);
-      downloadBtn.disabled = true;
       window._logSplicerLabel = label;
       return;
     }
 
     const who = userMode ? `${username} in ${channel}` : channel;
     setFooterDone(`${who}, ${label} (${provider.label}): ${okDays}/${total} with logs, ${totalLines} lines total.${inProgressNote || ''}`);
-    downloadBtn.disabled = totalLines === 0;
     window._logSplicerLabel = label;
   }
 
-  function downloadTxt() {
-    const label = window._logSplicerLabel || '';
-    const who = currentUserMode ? `${currentUsername} in ${currentChannel}` : currentChannel;
-    let out = `Logs for ${who}, ${label}\n`;
-    out += `Order: ${reverseOrder ? 'Newest to oldest' : 'Oldest to newest'}\n\n`;
-    const indices = dateList.map((_, i) => i);
-    if (reverseOrder) indices.reverse();
-    indices.forEach(i => {
-      const item = dateList[i];
-      const result = dayResults[i];
-      out += `\n===== ${labelForItem(item)} =====\n`;
-      if (result.status === 'ok') out += result.raw.trim() + '\n';
-      else if (result.status === 'empty') out += '(no logs)\n';
-      else out += `(error: ${result.message || 'unknown'})\n`;
-    });
-    const blob = new Blob([out], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const safeLabel = label.replace(/\s+/g, '-').replace(/[^\w\-,]/g, '');
-    const safeWho = who.replace(/\s+/g, '-').replace(/[^\w\-,]/g, '');
-    a.download = `${safeWho}-${safeLabel}-logs.txt`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
+  // Logo click resets everything
+  brandWrap.addEventListener('click', () => {
+    // Clear loaded logs
+    dateList = [];
+    dayResults = [];
+    slotEls = [];
+    monthGroups = [];
+    idxToGroup = [];
+    main.innerHTML = '';
+    showEmptyState(`
+      <div>Type a channel, choose a day, month or year, and hit Load<span class="cursor"></span></div>
+      <div style="font-size:11px;max-width:440px;">
+        As you type a channel, every provider is checked automatically in the Provider dropdown. The LED
+        next to each name lights up green if that channel is logged there, red if it is not. The best
+        available one is auto-selected. Month and Year views load into collapsed boxes: click a day (or a
+        month, in Year view) to expand it. Searching the filter box expands everything that matches. Add an
+        optional username to pull just that person's messages instead of the whole channel.
+      </div>
+    `);
+    setFooterDone('No logs loaded yet.');
+    window._logSplicerLabel = undefined;
+    // Reset provider checks to idle
+    PROVIDERS.forEach((_, i) => setProviderState(i, 'idle'));
+    lastCheckedChannel = null;
+    lastCheckResult = null;
+    autoSwitchNote.style.display = 'none';
+    corsBanner.classList.remove('visible');
+    // Reset all input fields
+    channelInput.value = '';
+    usernameInput.value = '';
+    filterInput.value = '';
+    dayInput.value = '2026-01-01';
+    monthSelect.value = 1;
+    yearInput.value = 2026;
+    // Reset view to month
+    setView('month');
+    // Reset reverse to newest first
+    setReverse(true);
+    // Re-enable day button if username is empty (it is)
+    daySegBtn.disabled = false;
+    daySegBtn.title = '';
+    // Clear channel error
+    channelInput.classList.remove('error', 'checking');
+    channelError.style.display = 'none';
+    // Clear the log cache? Optional, but we can keep it.
+  });
 
   loadBtn.addEventListener('click', loadRange);
   channelInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadRange(); });
   usernameInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadRange(); });
-  downloadBtn.addEventListener('click', downloadTxt);
 })();
 </script>
 </body>
