@@ -1165,7 +1165,8 @@
       note.textContent = `Could not load this item (${result.message || 'unknown error'}).`;
       slot.bodyEl.appendChild(note);
     }
-    if (filterQuery && result.status === 'ok' && visibleCount === 0) {
+    // Hide the whole day block if filter is active and there are no matching lines
+    if (filterQuery && (result.status !== 'ok' || visibleCount === 0)) {
       slot.el.style.display = 'none';
     } else {
       slot.el.style.display = '';
@@ -1515,13 +1516,11 @@
       const provider = PROVIDERS[providerIdx];
       const host = provider.host;
 
-      // Update status text
       statusText.textContent = `Checking ${provider.label}...`;
 
       let list, isFuture, label, inProgressNote, invalid;
       let useIndex = false;
 
-      // Try to use index for non-user mode
       if (!userMode) {
         const index = await getChannelIndex(host, channel, activeAbortController ? activeAbortController.signal : undefined);
         if (cancelRequested) break;
@@ -1558,7 +1557,6 @@
       }
 
       if (!useIndex) {
-        // Fallback
         const result = userMode
           ? buildDateListUserMode(currentView)
           : buildDateList(currentView);
@@ -1581,13 +1579,11 @@
             return;
           }
           if (isFuture || list.length === 0) {
-            // No days in this provider's fallback, skip to next
             continue;
           }
         }
       }
 
-      // If we have a list, switch provider UI and fetch
       if (providerIdx !== selectedProviderIdx) {
         selectProvider(providerIdx);
         autoSwitchNote.textContent = `Trying ${provider.label}...`;
@@ -1673,14 +1669,10 @@
         } else {
           console.error('OmniLogs: unexpected error during load', err);
         }
-      } finally {
-        // Don't reset loading here; we'll handle it after the provider loop
-        if (cancelRequested) break;
       }
 
       if (cancelRequested) break;
 
-      // Ensure all results are filled
       dayResults = dayResults.map(r => r || { status: 'error', raw: '', lines: [], message: 'did not finish loading' });
 
       const okDays = dayResults.filter(r => r.status === 'ok').length;
@@ -1697,9 +1689,7 @@
         autoSwitchNote.textContent = `Using ${provider.label} (found logs)`;
         autoSwitchNote.style.display = 'block';
         loadBtn.disabled = false;
-        // Re-render to ensure all month bodies are correctly built with final data
         renderMain();
-        // Stop loading state
         loading = false;
         setControlsDisabled(false);
         reverseBtn.disabled = false;
@@ -1713,7 +1703,6 @@
       }
     }
 
-    // If we exit the loop, either cancelled or no provider had logs
     // Clean up loading state
     loading = false;
     setControlsDisabled(false);
@@ -1734,7 +1723,6 @@
       return;
     }
 
-    // No provider had logs
     autoSwitchNote.style.display = 'none';
     const msg = userMode
       ? `<div>No logs found for user ${username} in ${channel} on any provider for the selected period.</div>
