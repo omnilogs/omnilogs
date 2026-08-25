@@ -383,6 +383,21 @@
   }
   #summaryWrap { display: flex; align-items: center; gap: 7px; }
 
+  .footer-disclaimer {
+    font-size: 10px;
+    color: var(--muted);
+    opacity: 0.6;
+    letter-spacing: 0.04em;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .footer-disclaimer .dot {
+    color: var(--accent);
+    font-size: 12px;
+    line-height: 1;
+  }
+
   #cors-banner {
     display: none;
     background: #2a1414;
@@ -495,7 +510,9 @@
       <span class="pulse-live" id="summaryPulse" style="display:none;"></span>
       <span id="summaryText">No logs loaded yet.</span>
     </span>
-    <span id="sourceLabel">Data source: logs.potat.app (unofficial, third-party)</span>
+    <span class="footer-disclaimer">
+      Not affiliated with Twitch or its creators. <span class="dot">•</span> <span id="current-year">2026</span> UmbraGG
+    </span>
   </footer>
 </div>
 
@@ -540,7 +557,6 @@
   const summaryPulse = document.getElementById('summaryPulse');
   const corsBanner = document.getElementById('cors-banner');
   const corsHost = document.getElementById('corsHost');
-  const sourceLabel = document.getElementById('sourceLabel');
   const viewSeg = document.getElementById('viewSeg');
   const daySegBtn = viewSeg.querySelector('[data-view="day"]');
   const dayField = document.getElementById('dayField');
@@ -552,6 +568,12 @@
   const autoSwitchNote = document.getElementById('autoSwitchNote');
   const brandWrap = document.getElementById('brandWrap');
   const cancelBtn = document.getElementById('cancelBtn');
+  const currentYearSpan = document.getElementById('current-year');
+
+  // Update disclaimer year
+  if (currentYearSpan) {
+    currentYearSpan.textContent = new Date().getFullYear();
+  }
 
   const MONTHS = ["January","February","March","April","May","June",
                   "July","August","September","October","November","December"];
@@ -1165,7 +1187,6 @@
       note.textContent = `Could not load this item (${result.message || 'unknown error'}).`;
       slot.bodyEl.appendChild(note);
     }
-    // Hide the whole day block if filter is active and there are no matching lines
     if (filterQuery && (result.status !== 'ok' || visibleCount === 0)) {
       slot.el.style.display = 'none';
     } else {
@@ -1597,8 +1618,6 @@
       dayResults = new Array(list.length).fill(null);
       currentLabel = provider.label;
       corsHost.textContent = provider.host;
-      sourceLabel.textContent = `Data source: ${provider.host} (unofficial, third-party)`;
-
       corsBanner.classList.remove('visible');
 
       const total = list.length;
