@@ -258,6 +258,20 @@
   .progress-fill { height: 100%; background: var(--accent); width: 0%; transition: width 0.15s ease; }
   .progress-pct { font-variant-numeric: tabular-nums; min-width: 32px; }
 
+  #cancelBtn {
+    background: var(--error);
+    color: white;
+    border: none;
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    transition: background 0.15s ease;
+  }
+  #cancelBtn:hover:not(:disabled) { background: #e04a4a; }
+  #cancelBtn:disabled { opacity: 0.6; cursor: default; }
+
   main { flex: 1; overflow-y: auto; padding: 0 0 60px 0; }
 
   .empty-state {
@@ -315,6 +329,7 @@
     color: var(--accent);
     transition: transform 0.2s ease;
     text-align: center;
+    transform: rotate(0deg);
   }
   .chevron.expanded { transform: rotate(90deg); }
 
@@ -476,6 +491,7 @@
     <span id="statusText">Loading...</span>
     <span class="progress-pct" id="progressPct">0%</span>
     <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+    <button id="cancelBtn" style="display:none;">Cancel</button>
   </div>
 
   <main id="main"></main>
@@ -541,6 +557,7 @@
   const reverseLabel = document.getElementById('reverseLabel');
   const autoSwitchNote = document.getElementById('autoSwitchNote');
   const brandWrap = document.getElementById('brandWrap');
+  const cancelBtn = document.getElementById('cancelBtn');
 
   const MONTHS = ["January","February","March","April","May","June",
                   "July","August","September","October","November","December"];
@@ -595,21 +612,16 @@
   function setDefaultDates() {
     const now = new Date();
     const year = now.getFullYear();
-    const month = now.getMonth() + 1; // 1-12
+    const month = now.getMonth() + 1;
     const day = now.getDate();
-
-    // For day input: YYYY-MM-DD
-    const dayStr = `${year}-${pad(month)}-${pad(day)}`;
-    dayInput.value = dayStr;
-    // For month select
+    dayInput.value = `${year}-${pad(month)}-${pad(day)}`;
     monthSelect.value = month;
-    // For year input
     yearInput.value = year;
   }
   setDefaultDates();
 
   let currentView = 'month';
-  let reverseOrder = true; // Newest to Oldest by default
+  let reverseOrder = true;
   let currentChannel = '';
   let currentUsername = '';
   let currentUserMode = false;
@@ -628,6 +640,10 @@
   const logCache = new Map();
   const channelListCache = new Map();
   const channelListPromises = new Map();
+
+  // Cancellation support
+  let cancelRequested = false;
+  let activeAbortController = null;
 
   function daysInMonth(year, month) { return new Date(year, month, 0).getDate(); }
   function pad(n) { return String(n).padStart(2, '0'); }
@@ -651,10 +667,13 @@
     div.textContent = str;
     return div.innerHTML;
   }
-  function fetchWithTimeout(url, ms) {
+  function fetchWithTimeout(url, ms, abortSignal) {
     const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), ms);
-    return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(t));
+    const timeoutId = setTimeout(() => controller.abort(), ms);
+    if (abortSignal) {
+      abortSignal.addEventListener('abort', () => controller.abort());
+    }
+    return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timeoutId));
   }
   function setControlsDisabled(disabled) {
     providerBtn.disabled = disabled;
@@ -806,6 +825,12 @@
     );
 
     const results = await Promise.all(checks);
+    if (token === channelCheckToken) {
+      PROVIDERS.forEach((_, i) => {
+        if (providerStatuses[i] === 'checking') setProviderState(i, 'blocked');
+      });
+    }
+
     if (token !== channelCheckToken) return null;
 
     channelInput.classList.remove('checking');
@@ -863,7 +888,6 @@
   // Fetching + caching (NO UTC CONVERSION)
   // =========================================================
 
-  // Helper to filter lines for a specific day (YYYY-MM-DD)
   function filterLinesByDay(lines, targetYear, targetMonth, targetDay) {
     const dateStr = `${targetYear}-${pad(targetMonth)}-${pad(targetDay)}`;
     return lines.filter(line => {
@@ -873,20 +897,19 @@
     });
   }
 
-  async function fetchDay(host, channel, year, month, day, username) {
+  async function fetchDay(host, channel, year, month, day, username, abortSignal) {
     const key = `${host}|${channel}|${year}-${month}-${day}` + (username ? `|user:${username.toLowerCase()}` : '');
     if (logCache.has(key)) return logCache.get(key);
 
     let result;
     if (username) {
-      // User-specific day: fetch the whole month and filter by day
       const monthKey = `${host}|${channel}|user:${username.toLowerCase()}|${year}-${month}`;
       let monthResult;
       if (logCache.has(monthKey)) {
         monthResult = logCache.get(monthKey);
       } else {
         const url = `https://${host}/channel/${encodeURIComponent(channel)}/user/${encodeURIComponent(username)}/${year}/${month}`;
-        const res = await fetchWithTimeout(url, 25000);
+        const res = await fetchWithTimeout(url, 25000, abortSignal);
         if (res.status === 404) {
           monthResult = { status: 'empty', raw: '', lines: [] };
         } else if (!res.ok) {
@@ -908,9 +931,8 @@
           : { status: 'empty', raw: '', lines: [] };
       }
     } else {
-      // Regular channel-wide day fetch
       const url = `https://${host}/channel/${encodeURIComponent(channel)}/${year}/${month}/${day}`;
-      const res = await fetchWithTimeout(url, 25000);
+      const res = await fetchWithTimeout(url, 25000, abortSignal);
       if (res.status === 404) {
         result = { status: 'empty', raw: '', lines: [] };
       } else if (!res.ok) {
@@ -926,11 +948,11 @@
     return result;
   }
 
-  async function fetchUserMonth(host, channel, username, year, month) {
+  async function fetchUserMonth(host, channel, username, year, month, abortSignal) {
     const key = `${host}|${channel}|user:${username.toLowerCase()}|${year}-${month}`;
     if (logCache.has(key)) return logCache.get(key);
     const url = `https://${host}/channel/${encodeURIComponent(channel)}/user/${encodeURIComponent(username)}/${year}/${month}`;
-    const res = await fetchWithTimeout(url, 25000);
+    const res = await fetchWithTimeout(url, 25000, abortSignal);
     let result;
     if (res.status === 404) {
       result = { status: 'empty', raw: '', lines: [] };
@@ -945,7 +967,6 @@
     return result;
   }
 
-  // Renders lines into container as one text block.
   function renderDayBody(container, lines, filterQuery) {
     const pre = document.createElement('pre');
     pre.className = 'log-lines';
@@ -1006,7 +1027,6 @@
       if (!slot.expandableOk) return;
       slot.expanded = !slot.expanded;
       if (slot.chevronEl) {
-        slot.chevronEl.textContent = slot.expanded ? '\u25BE' : '\u25B8';
         slot.chevronEl.classList.toggle('expanded', slot.expanded);
       }
       if (slot.expanded && !slot.rendered) {
@@ -1033,7 +1053,6 @@
       note.className = result.status === 'empty' ? 'day-empty-note' : 'day-error-note';
       note.textContent = result.status === 'empty' ? 'No logs recorded for this period.' : `Could not load this item (${result.message || 'unknown error'}).`;
       slot.bodyEl.appendChild(note);
-      slot.bodyEl.style.display = '';
     }
   }
 
@@ -1124,8 +1143,7 @@
 
     header.addEventListener('click', () => {
       state.expanded = !state.expanded;
-      chevron.textContent = state.expanded ? '\u25BE' : '\u25B8';
-      chevron.classList.toggle('expanded', state.expanded);
+      state.chevronEl.classList.toggle('expanded', state.expanded);
       bodyContainer.style.display = state.expanded ? '' : 'none';
       if (state.expanded && !state.builtRows) {
         buildDayRowsInto(bodyContainer, state.indices);
@@ -1182,7 +1200,6 @@
       return;
     }
 
-    // channel-mode Year view, no filter
     const groupsRaw = buildMonthGroupsFromList(dateList);
     groupsRaw.forEach((g, gi) => g.indices.forEach(i => idxToGroup[i] = gi));
     monthGroups = new Array(groupsRaw.length);
@@ -1224,7 +1241,6 @@
     }
   }
 
-  // Build chronological list for channel-wide logs (no UTC conversion)
   function buildDateList(view) {
     const today = new Date();
     const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
@@ -1278,7 +1294,6 @@
     return { list, isFuture: isFutureYear, label, inProgressNote };
   }
 
-  // Build chronological list for user-mode logs (only month granularity)
   function buildDateListUserMode(view) {
     const today = new Date();
     const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
@@ -1318,7 +1333,20 @@
     return { list, isFuture: isFutureYear, label, inProgressNote };
   }
 
-  // Main load function with provider fallback
+  // ----- Cancel handler -----
+  function cancelSearch() {
+    if (!loading) return;
+    cancelRequested = true;
+    if (activeAbortController) {
+      activeAbortController.abort();
+      activeAbortController = null;
+    }
+    cancelBtn.disabled = true;
+    cancelBtn.textContent = 'Cancelling...';
+  }
+
+  cancelBtn.addEventListener('click', cancelSearch);
+
   async function loadRange() {
     const channel = channelInput.value.trim().replace(/^@/, '').toLowerCase();
     if (!channel) { channelInput.focus(); return; }
@@ -1334,7 +1362,6 @@
       return;
     }
 
-    // Get list of available providers (from the check)
     const availableProviders = providerStatuses
       .map((state, idx) => state === 'available' ? idx : -1)
       .filter(idx => idx !== -1);
@@ -1346,7 +1373,6 @@
       return;
     }
 
-    // We'll try providers in order (starting from the currently selected one, then the rest)
     const startIdx = availableProviders.indexOf(selectedProviderIdx);
     const orderedProviders = availableProviders.slice(startIdx).concat(availableProviders.slice(0, startIdx));
 
@@ -1354,11 +1380,19 @@
     let finalLabel = '';
     let finalInProgressNote = '';
 
+    // Reset cancellation state
+    cancelRequested = false;
+    activeAbortController = new AbortController();
+    cancelBtn.style.display = 'inline-block';
+    cancelBtn.disabled = false;
+    cancelBtn.textContent = 'Cancel';
+
     for (const providerIdx of orderedProviders) {
+      if (cancelRequested) break;
+
       const provider = PROVIDERS[providerIdx];
       const host = provider.host;
 
-      // Build the date list based on view and userMode
       const { list, isFuture, label, inProgressNote, invalid } = userMode
         ? buildDateListUserMode(currentView)
         : buildDateList(currentView);
@@ -1367,16 +1401,19 @@
         loadBtn.disabled = false;
         showEmptyState(`<div>Pick a valid date first.</div>`);
         setFooterDone('No date selected.');
+        activeAbortController = null;
+        cancelBtn.style.display = 'none';
         return;
       }
       if (isFuture || list.length === 0) {
         loadBtn.disabled = false;
         showEmptyState(`<div>${label} hasn't happened yet. Nothing to load.</div>`);
         setFooterDone(`${label} is in the future.`);
+        activeAbortController = null;
+        cancelBtn.style.display = 'none';
         return;
       }
 
-      // Switch provider UI to this one temporarily
       if (providerIdx !== selectedProviderIdx) {
         selectProvider(providerIdx);
         autoSwitchNote.textContent = `Trying ${provider.label}...`;
@@ -1414,25 +1451,36 @@
         const queue = list.map((_, i) => i);
 
         async function worker() {
-          while (queue.length) {
+          while (queue.length && !cancelRequested) {
             const idx = queue.shift();
             const item = list[idx];
             let result;
             try {
               if (userMode) {
                 if (currentView === 'day' && item.day !== null) {
-                  // Fetch month and filter by day
-                  result = await fetchDay(host, channel, item.year, item.month, item.day, username);
+                  result = await fetchDay(host, channel, item.year, item.month, item.day, username, activeAbortController ? activeAbortController.signal : undefined);
                 } else {
-                  result = await fetchUserMonth(host, channel, username, item.year, item.month);
+                  result = await fetchUserMonth(host, channel, username, item.year, item.month, activeAbortController ? activeAbortController.signal : undefined);
                 }
               } else {
-                result = await fetchDay(host, channel, item.year, item.month, item.day, null);
+                result = await fetchDay(host, channel, item.year, item.month, item.day, null, activeAbortController ? activeAbortController.signal : undefined);
               }
             } catch (err) {
-              result = { status: 'error', raw: '', lines: [], message: 'network/CORS error' };
-              if (!fatalNetworkError) fatalNetworkError = err;
+              if (err.name === 'AbortError') {
+                if (cancelRequested) {
+                  // User canceled, stop entirely
+                  return;
+                } else {
+                  // Timeout or other abort not from user – treat as network error
+                  result = { status: 'error', raw: '', lines: [], message: 'timeout/network error' };
+                  if (!fatalNetworkError) fatalNetworkError = err;
+                }
+              } else {
+                result = { status: 'error', raw: '', lines: [], message: 'network/CORS error' };
+                if (!fatalNetworkError) fatalNetworkError = err;
+              }
             }
+            if (cancelRequested) return;
             dayResults[idx] = result;
             if (result.status === 'ok') okSoFar++;
             try {
@@ -1441,6 +1489,7 @@
               console.error('OmniLogs: display update failed for item', idx, renderErr);
             }
             completed++;
+            // Update UI (throttled via requestAnimationFrame)
             const pct = Math.round((completed / total) * 100);
             statusText.textContent = `Loading ${channel} from ${provider.label} (${completed} / ${total})`;
             progressPct.textContent = `${pct}%`;
@@ -1449,46 +1498,75 @@
           }
         }
 
-        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, worker));
+        const workers = Array.from({ length: Math.min(CONCURRENCY, total) }, worker);
+        await Promise.all(workers);
       } catch (err) {
-        console.error('OmniLogs: unexpected error during load', err);
+        if (err.name === 'AbortError' && cancelRequested) {
+          // ignore, we handle cancel
+        } else {
+          console.error('OmniLogs: unexpected error during load', err);
+        }
       } finally {
         loading = false;
         statusBar.classList.remove('visible');
         setControlsDisabled(false);
         reverseBtn.disabled = false;
+        activeAbortController = null;
+        cancelBtn.style.display = 'none';
+        if (cancelRequested) {
+          showEmptyState(`<div>Search cancelled.</div>`);
+          setFooterDone('Cancelled.');
+          loadBtn.disabled = false;
+          dateList = [];
+          dayResults = [];
+          slotEls = [];
+          monthGroups = [];
+          idxToGroup = [];
+          return;
+        }
       }
 
+      // If we get here and cancelRequested is true, we already returned above
+      if (cancelRequested) break;
+
+      // Ensure all results are filled
       dayResults = dayResults.map(r => r || { status: 'error', raw: '', lines: [], message: 'did not finish loading' });
 
       const okDays = dayResults.filter(r => r.status === 'ok').length;
       const totalLines = dayResults.reduce((sum, r) => r.status === 'ok' ? sum + r.lines.length : sum, 0);
 
       if (okDays > 0) {
-        // Success!
+        setProviderState(providerIdx, 'available');
+      } else {
+        setProviderState(providerIdx, 'nologs');
+      }
+
+      if (okDays > 0) {
         success = true;
         finalLabel = label;
         finalInProgressNote = inProgressNote || '';
         const who = userMode ? `${username} in ${channel}` : channel;
         setFooterDone(`${who}, ${label} (${provider.label}): ${okDays}/${total} with logs, ${totalLines} lines total.${finalInProgressNote}`);
         window._logSplicerLabel = label;
-        // Keep this provider selected
         selectProvider(providerIdx);
         autoSwitchNote.textContent = `Using ${provider.label} (found logs)`;
         autoSwitchNote.style.display = 'block';
         loadBtn.disabled = false;
-        return; // exit the loop
+        return;
       } else {
-        // No logs found with this provider, try the next one
         autoSwitchNote.textContent = `No logs found on ${provider.label}, trying next...`;
         autoSwitchNote.style.display = 'block';
-        // Continue loop
       }
     }
 
-    // If we exit the loop, no provider had logs
+    // If we exit the loop (either finished all providers or cancelled)
     if (!success) {
       loadBtn.disabled = false;
+      if (cancelRequested) return;
+      autoSwitchNote.style.display = 'none';
+      PROVIDERS.forEach((_, idx) => {
+        if (providerStatuses[idx] === 'available') setProviderState(idx, 'nologs');
+      });
       const msg = userMode
         ? `<div>No logs found for user ${username} in ${channel} on any provider for the selected period.</div>
            <div style="font-size:11px;max-width:440px;">They may not have chatted there during this period,
@@ -1504,8 +1582,10 @@
     }
   }
 
-  // Logo click resets everything
   brandWrap.addEventListener('click', () => {
+    if (loading) {
+      cancelSearch();
+    }
     dateList = [];
     dayResults = [];
     slotEls = [];
@@ -1532,12 +1612,23 @@
     channelInput.value = '';
     usernameInput.value = '';
     filterInput.value = '';
-    // Reset dates to today
     setDefaultDates();
     setView('month');
     setReverse(true);
     channelInput.classList.remove('error', 'checking');
     channelError.style.display = 'none';
+    cancelBtn.style.display = 'none';
+    cancelBtn.disabled = false;
+    cancelBtn.textContent = 'Cancel';
+    cancelRequested = false;
+    if (activeAbortController) {
+      activeAbortController.abort();
+      activeAbortController = null;
+    }
+    loading = false;
+    setControlsDisabled(false);
+    loadBtn.disabled = false;
+    statusBar.classList.remove('visible');
   });
 
   loadBtn.addEventListener('click', loadRange);
