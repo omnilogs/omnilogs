@@ -882,6 +882,100 @@
   // Fetching + caching (NO UTC CONVERSION)
   // =========================================================
 
+  // --- Channel Index ---
+  async function getChannelIndex(host, channel, abortSignal) {
+    const key = `${host}|${channel}|index`;
+    if (logCache.has(key)) return logCache.get(key);
+    try {
+      const url = `https://${host}/channel/${encodeURIComponent(channel)}/index`;
+      const res = await fetchWithTimeout(url, 8000, abortSignal);
+      if (!res.ok) return null;
+      const data = await res.json();
+      let days = [];
+      if (Array.isArray(data)) {
+        days = data.map(item => {
+          let year, month, day;
+          if (item.year && item.month && item.day) {
+            year = item.year;
+            month = item.month;
+            day = item.day;
+          } else if (item.date) {
+            const parts = item.date.split('-').map(Number);
+            if (parts.length === 3) {
+              [year, month, day] = parts;
+            }
+          } else if (item.day) {
+            year = item.year || item.YEAR || item.y;
+            month = item.month || item.MONTH || item.m;
+            day = item.day || item.DAY || item.d;
+          }
+          if (year && month && day) return { year: Number(year), month: Number(month), day: Number(day) };
+          return null;
+        }).filter(d => d !== null);
+      } else if (data && typeof data === 'object') {
+        for (const k of ['days', 'logs', 'items', 'data']) {
+          if (Array.isArray(data[k])) {
+            days = data[k].map(item => {
+              let year, month, day;
+              if (item.year && item.month && item.day) {
+                year = item.year;
+                month = item.month;
+                day = item.day;
+              } else if (item.date) {
+                const parts = item.date.split('-').map(Number);
+                if (parts.length === 3) {
+                  [year, month, day] = parts;
+                }
+              } else if (item.day) {
+                year = item.year || item.YEAR || item.y;
+                month = item.month || item.MONTH || item.m;
+                day = item.day || item.DAY || item.d;
+              }
+              if (year && month && day) return { year: Number(year), month: Number(month), day: Number(day) };
+              return null;
+            }).filter(d => d !== null);
+            break;
+          }
+        }
+      }
+      if (days.length) {
+        const seen = new Set();
+        const unique = days.filter(d => {
+          const key = `${d.year}-${d.month}-${d.day}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        unique.sort((a, b) => a.year - b.year || a.month - b.month || a.day - b.day);
+        logCache.set(key, unique);
+        return unique;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function filterIndexByPeriod(index, view, year, month, day) {
+    const today = new Date();
+    const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    let filtered = index.filter(d => {
+      const dt = new Date(d.year, d.month - 1, d.day);
+      if (dt > todayMidnight) return false;
+      if (view === 'day') {
+        return d.year === year && d.month === month && d.day === day;
+      } else if (view === 'month') {
+        return d.year === year && d.month === month;
+      } else if (view === 'year') {
+        return d.year === year;
+      }
+      return true;
+    });
+    filtered.sort((a, b) => a.year - b.year || a.month - b.month || a.day - b.day);
+    return filtered;
+  }
+
+  // ---- Fetching individual day (with optional username) ----
   function filterLinesByDay(lines, targetYear, targetMonth, targetDay) {
     const dateStr = `${targetYear}-${pad(targetMonth)}-${pad(targetDay)}`;
     return lines.filter(line => {
@@ -961,6 +1055,7 @@
     return result;
   }
 
+  // ---- Render helpers ----
   function renderDayBody(container, lines, filterQuery) {
     const pre = document.createElement('pre');
     pre.className = 'log-lines';
@@ -1047,6 +1142,7 @@
       note.className = result.status === 'empty' ? 'day-empty-note' : 'day-error-note';
       note.textContent = result.status === 'empty' ? 'No logs recorded for this period.' : `Could not load this item (${result.message || 'unknown error'}).`;
       slot.bodyEl.appendChild(note);
+      // Keep the body hidden if collapsed
     }
   }
 
@@ -1070,8 +1166,12 @@
       note.textContent = `Could not load this item (${result.message || 'unknown error'}).`;
       slot.bodyEl.appendChild(note);
     }
-    const shouldHide = !!filterQuery && (result.status !== 'ok' || visibleCount === 0);
-    slot.el.style.display = shouldHide ? 'none' : '';
+    // In flat mode we always show the slot (Day view always shows, filter may hide if no matches)
+    if (filterQuery && result.status === 'ok' && visibleCount === 0) {
+      slot.el.style.display = 'none';
+    } else {
+      slot.el.style.display = '';
+    }
   }
 
   function buildMonthDividerStatic(year, month) {
@@ -1092,8 +1192,11 @@
     return groups;
   }
 
+  // ---- BUILD DAY ROWS - only for days with logs (status 'ok') ----
   function buildDayRowsInto(container, indices) {
-    const order = reverseOrder ? indices.slice().reverse() : indices;
+    // Filter to only days that have logs (status 'ok')
+    const okIndices = indices.filter(i => dayResults[i] && dayResults[i].status === 'ok');
+    const order = reverseOrder ? okIndices.slice().reverse() : okIndices;
     order.forEach(i => {
       const slot = buildSkeletonBlock(dateList[i], true);
       attachCollapseHandler(slot, i);
@@ -1133,13 +1236,20 @@
     bodyContainer.style.display = 'none';
     el.appendChild(bodyContainer);
 
+    // Check if any day in this month has logs (status 'ok')
+    const hasLogs = g.indices.some(i => dayResults[i] && dayResults[i].status === 'ok');
+    if (!hasLogs) {
+      // If no logs in month, show a placeholder inside the body
+      bodyContainer.innerHTML = `<div class="day-empty-note" style="padding: 10px 20px;">No logs this month</div>`;
+    }
+
     const state = { el, headerRight: right, chevronEl: chevron, bodyContainer, indices: g.indices, expanded: false, builtRows: false };
 
     header.addEventListener('click', () => {
       state.expanded = !state.expanded;
       state.chevronEl.classList.toggle('expanded', state.expanded);
       bodyContainer.style.display = state.expanded ? '' : 'none';
-      if (state.expanded && !state.builtRows) {
+      if (state.expanded && !state.builtRows && hasLogs) {
         buildDayRowsInto(bodyContainer, state.indices);
         state.builtRows = true;
       }
@@ -1181,6 +1291,9 @@
           const key = `${item.year}-${item.month}`;
           if (key !== lastMonthKey) { main.appendChild(buildMonthDividerStatic(item.year, item.month)); lastMonthKey = key; }
         }
+        // In flat mode (Day view or filter active), we always show the day, even if empty
+        // but we might want to hide empty days in Year view with filter? Actually with filter, we show only matching lines.
+        // For Day view, we always show.
         const slot = buildSkeletonBlock(item, false);
         slotEls[i] = slot;
         main.appendChild(slot.el);
@@ -1189,11 +1302,10 @@
       return;
     }
 
-    if (currentView === 'month' || (currentUserMode && currentView === 'year')) {
-      buildDayRowsInto(main, dateList.map((_, i) => i));
-      return;
-    }
-
+    // Month/Year views with collapsible months
+    // First filter dateList to only days with logs? No, we keep all, but buildDayRowsInto will only include logs.
+    // But we need month groups; they should include all days even if empty? The month header shows count of logs vs total.
+    // So we keep all days in groups.
     const groupsRaw = buildMonthGroupsFromList(dateList);
     groupsRaw.forEach((g, gi) => g.indices.forEach(i => idxToGroup[i] = gi));
     monthGroups = new Array(groupsRaw.length);
@@ -1204,6 +1316,7 @@
       monthGroups[gi] = state;
       main.appendChild(state.el);
     });
+    // Update headers with final counts (after fetch)
     groupsRaw.forEach((_, gi) => updateGroupHeader(gi));
   }
 
@@ -1235,6 +1348,7 @@
     }
   }
 
+  // ---- Fallback date lists (used when index not available) ----
   function buildDateList(view) {
     const today = new Date();
     const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
@@ -1341,6 +1455,9 @@
 
   cancelBtn.addEventListener('click', cancelSearch);
 
+  // =========================================================
+  // Main LOAD function with provider fallback and index support
+  // =========================================================
   async function loadRange() {
     const channel = channelInput.value.trim().replace(/^@/, '').toLowerCase();
     if (!channel) { channelInput.focus(); return; }
@@ -1374,7 +1491,6 @@
     let finalLabel = '';
     let finalInProgressNote = '';
 
-    // Reset cancellation state
     cancelRequested = false;
     activeAbortController = new AbortController();
     cancelBtn.style.display = 'inline-block';
@@ -1387,27 +1503,71 @@
       const provider = PROVIDERS[providerIdx];
       const host = provider.host;
 
-      const { list, isFuture, label, inProgressNote, invalid } = userMode
-        ? buildDateListUserMode(currentView)
-        : buildDateList(currentView);
+      let list, isFuture, label, inProgressNote, invalid;
+      let useIndex = false;
 
-      if (invalid) {
-        loadBtn.disabled = false;
-        showEmptyState(`<div>Pick a valid date first.</div>`);
-        setFooterDone('No date selected.');
-        activeAbortController = null;
-        cancelBtn.style.display = 'none';
-        return;
-      }
-      if (isFuture || list.length === 0) {
-        loadBtn.disabled = false;
-        showEmptyState(`<div>${label} hasn't happened yet. Nothing to load.</div>`);
-        setFooterDone(`${label} is in the future.`);
-        activeAbortController = null;
-        cancelBtn.style.display = 'none';
-        return;
+      // Try to use index for non-user mode
+      if (!userMode) {
+        const index = await getChannelIndex(host, channel, activeAbortController ? activeAbortController.signal : undefined);
+        if (index && !cancelRequested) {
+          let year, month, day;
+          if (currentView === 'day') {
+            const raw = dayInput.value;
+            if (raw) {
+              const parts = raw.split('-').map(Number);
+              if (parts.length === 3) { [year, month, day] = parts; }
+            }
+          } else if (currentView === 'month') {
+            year = parseInt(yearInput.value, 10);
+            month = parseInt(monthSelect.value, 10);
+          } else {
+            year = parseInt(yearInput.value, 10);
+          }
+          const filtered = filterIndexByPeriod(index, currentView, year, month, day);
+          if (filtered.length) {
+            list = filtered;
+            useIndex = true;
+            if (currentView === 'day') {
+              label = `${MONTHS[month-1]} ${day}, ${year}`;
+            } else if (currentView === 'month') {
+              label = `${MONTHS[month-1]} ${year}`;
+            } else {
+              label = `${year}`;
+            }
+            inProgressNote = '';
+            invalid = false;
+            isFuture = false;
+          }
+        }
       }
 
+      if (!useIndex) {
+        // Fallback
+        const result = userMode
+          ? buildDateListUserMode(currentView)
+          : buildDateList(currentView);
+        invalid = result.invalid;
+        isFuture = result.isFuture;
+        label = result.label;
+        inProgressNote = result.inProgressNote || '';
+        list = result.list;
+        if (invalid || isFuture || list.length === 0) {
+          if (invalid) {
+            loadBtn.disabled = false;
+            showEmptyState(`<div>Pick a valid date first.</div>`);
+            setFooterDone('No date selected.');
+            activeAbortController = null;
+            cancelBtn.style.display = 'none';
+            return;
+          }
+          if (isFuture || list.length === 0) {
+            // If no days in this provider's fallback, skip to next provider
+            continue;
+          }
+        }
+      }
+
+      // Now we have a list of days to fetch
       if (providerIdx !== selectedProviderIdx) {
         selectProvider(providerIdx);
         autoSwitchNote.textContent = `Trying ${provider.label}...`;
@@ -1519,13 +1679,13 @@
 
       if (cancelRequested) break;
 
+      // Ensure all results are filled
       dayResults = dayResults.map(r => r || { status: 'error', raw: '', lines: [], message: 'did not finish loading' });
 
       const okDays = dayResults.filter(r => r.status === 'ok').length;
       const totalLines = dayResults.reduce((sum, r) => r.status === 'ok' ? sum + r.lines.length : sum, 0);
 
-      // Do NOT change provider status based on whether logs were found.
-      // The LED should reflect channel availability only.
+      // Do NOT change provider status based on logs found
 
       if (okDays > 0) {
         success = true;
@@ -1538,6 +1698,15 @@
         autoSwitchNote.textContent = `Using ${provider.label} (found logs)`;
         autoSwitchNote.style.display = 'block';
         loadBtn.disabled = false;
+        // After fetch, we might want to re-render to hide empty days in Month/Year views
+        // renderMain() already handles that; we just need to ensure we call it again if needed.
+        // But since we rendered initially and updated each day, the final render will be correct.
+        // However, for collapsed months, the rows are built on expand, so they will only show logs.
+        // For flat mode, we already show empty days in Day view, but in filter mode we might hide.
+        // We need to re-render to apply the final state if some days were updated after initial render.
+        // But we already called updateDisplayForResult for each, so it should be fine.
+        // Still, to be safe, we can call renderMain() again.
+        renderMain();
         return;
       } else {
         autoSwitchNote.textContent = `No logs found on ${provider.label}, trying next...`;
@@ -1545,12 +1714,11 @@
       }
     }
 
-    // If we exit the loop (either finished all providers or cancelled)
+    // No provider had logs
     if (!success) {
       loadBtn.disabled = false;
       if (cancelRequested) return;
       autoSwitchNote.style.display = 'none';
-      // Do NOT modify providerStatuses here; they remain as availability state.
       const msg = userMode
         ? `<div>No logs found for user ${username} in ${channel} on any provider for the selected period.</div>
            <div style="font-size:11px;max-width:440px;">They may not have chatted there during this period,
