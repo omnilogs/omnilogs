@@ -47,19 +47,10 @@
     margin-right: 14px;
     align-self: center;
     cursor: pointer;
-    transition: filter 0.2s;
+    transition: filter 0.2s ease;
   }
   .brand-wrap:hover {
     filter: drop-shadow(0 0 6px var(--accent)) drop-shadow(0 0 12px var(--accent-dim));
-    animation: glitch 0.3s steps(1) infinite;
-  }
-  @keyframes glitch {
-    0% { transform: translate(0); }
-    20% { transform: translate(-2px, 1px); }
-    40% { transform: translate(2px, -1px); }
-    60% { transform: translate(-1px, 2px); }
-    80% { transform: translate(1px, -2px); }
-    100% { transform: translate(0); }
   }
 
   .brand {
@@ -1530,11 +1521,8 @@
       const okDays = dayResults.filter(r => r.status === 'ok').length;
       const totalLines = dayResults.reduce((sum, r) => r.status === 'ok' ? sum + r.lines.length : sum, 0);
 
-      if (okDays > 0) {
-        setProviderState(providerIdx, 'available');
-      } else {
-        setProviderState(providerIdx, 'nologs');
-      }
+      // Do NOT change provider status based on whether logs were found.
+      // The LED should reflect channel availability only.
 
       if (okDays > 0) {
         success = true;
@@ -1559,9 +1547,7 @@
       loadBtn.disabled = false;
       if (cancelRequested) return;
       autoSwitchNote.style.display = 'none';
-      PROVIDERS.forEach((_, idx) => {
-        if (providerStatuses[idx] === 'available') setProviderState(idx, 'nologs');
-      });
+      // Do NOT modify providerStatuses here; they remain as availability state.
       const msg = userMode
         ? `<div>No logs found for user ${username} in ${channel} on any provider for the selected period.</div>
            <div style="font-size:11px;max-width:440px;">They may not have chatted there during this period,
