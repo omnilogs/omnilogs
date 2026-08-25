@@ -47,10 +47,11 @@
     margin-right: 14px;
     align-self: center;
     cursor: pointer;
-    transition: filter 0.2s ease;
+    transition: transform 0.25s ease, filter 0.25s ease;
   }
   .brand-wrap:hover {
-    filter: drop-shadow(0 0 6px var(--accent)) drop-shadow(0 0 12px var(--accent-dim));
+    transform: scale(1.04);
+    filter: drop-shadow(0 0 12px rgba(145, 70, 255, 0.4));
   }
 
   .brand {
@@ -353,6 +354,8 @@
     line-height: 1.55;
     white-space: pre-wrap;
     word-break: break-word;
+    overflow-x: hidden;
+    max-width: 100%;
     padding: 10px 20px;
     margin: 0;
   }
