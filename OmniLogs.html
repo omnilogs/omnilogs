@@ -87,7 +87,7 @@
   input:focus, select:focus { border-color: var(--accent); }
   input:disabled, select:disabled, button:disabled { opacity: 0.55; cursor: default; }
   input#channel, input#username {
-    width: 140px;
+    width: 170px;
     font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
     transition: border-color 0.15s ease;
   }
@@ -434,13 +434,13 @@
 
     <div class="field">
       <label for="channel">Channel</label>
-      <input id="channel" type="text" placeholder="username" spellcheck="false" autocomplete="off">
+      <input id="channel" type="text" placeholder="channel or id:123" spellcheck="false" autocomplete="off">
       <div class="channel-error" id="channelError"></div>
     </div>
 
     <div class="field">
       <label for="username">User (optional)</label>
-      <input id="username" type="text" placeholder="username" spellcheck="false" autocomplete="off">
+      <input id="username" type="text" placeholder="username or id:123" spellcheck="false" autocomplete="off">
     </div>
 
     <div class="field">
@@ -534,6 +534,15 @@
     { label: 'logs.twitchmetrics.xyz', host: 'logs.twitchmetrics.xyz' },
     { label: 'logs.jimmyboy.dev',      host: 'logs.jimmyboy.dev' },
   ];
+
+  // Helper: detect ID input
+  function isIdInput(str) {
+    return /^id:\s*\d+$/i.test(str.trim());
+  }
+  function extractId(str) {
+    const match = str.trim().match(/^id:\s*(\d+)$/i);
+    return match ? match[1] : null;
+  }
 
   const providerBtn = document.getElementById('providerBtn');
   const providerBtnLed = document.getElementById('providerBtnLed');
@@ -880,11 +889,12 @@
     return res;
   }
 
+  // ---- Channel input events with ID detection ----
   let channelDebounceTimer = null;
   channelInput.addEventListener('input', () => {
     clearTimeout(channelDebounceTimer);
-    const val = channelInput.value.trim();
-    if (!val) {
+    const rawVal = channelInput.value.trim();
+    if (!rawVal) {
       channelInput.classList.remove('error', 'checking');
       channelError.style.display = 'none';
       autoSwitchNote.style.display = 'none';
@@ -893,24 +903,142 @@
       lastCheckResult = null;
       return;
     }
-    channelDebounceTimer = setTimeout(() => ensureChecked(val.replace(/^@/, '').toLowerCase()), 700);
+    // If it's an ID, skip provider check and clear any error
+    if (isIdInput(rawVal)) {
+      channelInput.classList.remove('error', 'checking');
+      channelError.style.display = 'none';
+      autoSwitchNote.style.display = 'none';
+      PROVIDERS.forEach((_, i) => setProviderState(i, 'idle'));
+      lastCheckedChannel = null;
+      lastCheckResult = null;
+      return;
+    }
+    const val = rawVal.replace(/^@/, '').toLowerCase();
+    channelDebounceTimer = setTimeout(() => ensureChecked(val), 700);
   });
   channelInput.addEventListener('blur', () => {
-    const val = channelInput.value.trim();
-    if (val) ensureChecked(val.replace(/^@/, '').toLowerCase());
+    const rawVal = channelInput.value.trim();
+    if (!rawVal) return;
+    if (isIdInput(rawVal)) {
+      channelInput.classList.remove('error', 'checking');
+      channelError.style.display = 'none';
+      autoSwitchNote.style.display = 'none';
+      PROVIDERS.forEach((_, i) => setProviderState(i, 'idle'));
+      lastCheckedChannel = null;
+      lastCheckResult = null;
+      return;
+    }
+    const val = rawVal.replace(/^@/, '').toLowerCase();
+    if (val) ensureChecked(val);
   });
 
   // =========================================================
-  // Fetching + caching (NO UTC CONVERSION)
+  // Fetching + caching with ID support
   // =========================================================
 
-  // --- Channel Index ---
+  function filterLinesByDay(lines, targetYear, targetMonth, targetDay) {
+    const dateStr = `${targetYear}-${pad(targetMonth)}-${pad(targetDay)}`;
+    return lines.filter(line => {
+      const match = line.match(/^\[(\d{4}-\d{2}-\d{2})/);
+      if (!match) return false;
+      return match[1] === dateStr;
+    });
+  }
+
+  async function fetchDay(host, channel, year, month, day, username, abortSignal) {
+    const isChannelId = isIdInput(channel);
+    const channelPathType = isChannelId ? 'channelid' : 'channel';
+    const channelParam = isChannelId ? extractId(channel) : channel;
+
+    const key = `${host}|${channelPathType}|${channelParam}|${year}-${month}-${day}` + (username ? `|user:${username}` : '');
+    if (logCache.has(key)) return logCache.get(key);
+
+    let result;
+    if (username) {
+      const isUserId = isIdInput(username);
+      const userPathType = isUserId ? 'userid' : 'user';
+      const userParam = isUserId ? extractId(username) : username;
+
+      const monthKey = `${host}|${channelPathType}|${channelParam}|${userPathType}|${userParam}|${year}-${month}`;
+      let monthResult;
+      if (logCache.has(monthKey)) {
+        monthResult = logCache.get(monthKey);
+      } else {
+        const url = `https://${host}/${channelPathType}/${encodeURIComponent(channelParam)}/${userPathType}/${encodeURIComponent(userParam)}/${year}/${month}`;
+        const res = await fetchWithTimeout(url, 25000, abortSignal);
+        if (res.status === 404) {
+          monthResult = { status: 'empty', raw: '', lines: [] };
+        } else if (!res.ok) {
+          monthResult = { status: 'error', raw: '', lines: [], message: `HTTP ${res.status}` };
+        } else {
+          const text = await res.text();
+          const lines = text.split('\n').filter(l => l.trim().length > 0);
+          monthResult = lines.length ? { status: 'ok', raw: text, lines } : { status: 'empty', raw: '', lines: [] };
+        }
+        if (monthResult.status !== 'error') logCache.set(monthKey, monthResult);
+      }
+
+      if (monthResult.status === 'error' || monthResult.status === 'empty') {
+        result = { status: monthResult.status, raw: '', lines: [], message: monthResult.message };
+      } else {
+        const filteredLines = filterLinesByDay(monthResult.lines, year, month, day);
+        result = filteredLines.length
+          ? { status: 'ok', raw: filteredLines.join('\n'), lines: filteredLines }
+          : { status: 'empty', raw: '', lines: [] };
+      }
+    } else {
+      const url = `https://${host}/${channelPathType}/${encodeURIComponent(channelParam)}/${year}/${month}/${day}`;
+      const res = await fetchWithTimeout(url, 25000, abortSignal);
+      if (res.status === 404) {
+        result = { status: 'empty', raw: '', lines: [] };
+      } else if (!res.ok) {
+        result = { status: 'error', raw: '', lines: [], message: `HTTP ${res.status}` };
+      } else {
+        const text = await res.text();
+        const lines = text.split('\n').filter(l => l.trim().length > 0);
+        result = lines.length ? { status: 'ok', raw: text, lines } : { status: 'empty', raw: '', lines: [] };
+      }
+    }
+
+    if (result.status !== 'error') logCache.set(key, result);
+    return result;
+  }
+
+  async function fetchUserMonth(host, channel, username, year, month, abortSignal) {
+    const isChannelId = isIdInput(channel);
+    const channelPathType = isChannelId ? 'channelid' : 'channel';
+    const channelParam = isChannelId ? extractId(channel) : channel;
+
+    const isUserId = isIdInput(username);
+    const userPathType = isUserId ? 'userid' : 'user';
+    const userParam = isUserId ? extractId(username) : username;
+
+    const key = `${host}|${channelPathType}|${channelParam}|${userPathType}|${userParam}|${year}-${month}`;
+    if (logCache.has(key)) return logCache.get(key);
+
+    const url = `https://${host}/${channelPathType}/${encodeURIComponent(channelParam)}/${userPathType}/${encodeURIComponent(userParam)}/${year}/${month}`;
+    const res = await fetchWithTimeout(url, 25000, abortSignal);
+    let result;
+    if (res.status === 404) {
+      result = { status: 'empty', raw: '', lines: [] };
+    } else if (!res.ok) {
+      result = { status: 'error', raw: '', lines: [], message: `HTTP ${res.status}` };
+    } else {
+      const text = await res.text();
+      const lines = text.split('\n').filter(l => l.trim().length > 0);
+      result = lines.length ? { status: 'ok', raw: text, lines } : { status: 'empty', raw: '', lines: [] };
+    }
+    if (result.status !== 'error') logCache.set(key, result);
+    return result;
+  }
+
+  // ---- Channel Index (with timeout) ----
   async function getChannelIndex(host, channel, abortSignal) {
     const key = `${host}|${channel}|index`;
     if (logCache.has(key)) return logCache.get(key);
     try {
       const url = `https://${host}/channel/${encodeURIComponent(channel)}/index`;
-      const res = await fetchWithTimeout(url, 8000, abortSignal);
+      const res = await fetchWithTimeout(url, 5000, abortSignal);
       if (!res.ok) return null;
       const data = await res.json();
       let days = [];
@@ -997,87 +1125,7 @@
     return filtered;
   }
 
-  // ---- Fetching individual day (with optional username) ----
-  function filterLinesByDay(lines, targetYear, targetMonth, targetDay) {
-    const dateStr = `${targetYear}-${pad(targetMonth)}-${pad(targetDay)}`;
-    return lines.filter(line => {
-      const match = line.match(/^\[(\d{4}-\d{2}-\d{2})/);
-      if (!match) return false;
-      return match[1] === dateStr;
-    });
-  }
-
-  async function fetchDay(host, channel, year, month, day, username, abortSignal) {
-    const key = `${host}|${channel}|${year}-${month}-${day}` + (username ? `|user:${username.toLowerCase()}` : '');
-    if (logCache.has(key)) return logCache.get(key);
-
-    let result;
-    if (username) {
-      const monthKey = `${host}|${channel}|user:${username.toLowerCase()}|${year}-${month}`;
-      let monthResult;
-      if (logCache.has(monthKey)) {
-        monthResult = logCache.get(monthKey);
-      } else {
-        const url = `https://${host}/channel/${encodeURIComponent(channel)}/user/${encodeURIComponent(username)}/${year}/${month}`;
-        const res = await fetchWithTimeout(url, 25000, abortSignal);
-        if (res.status === 404) {
-          monthResult = { status: 'empty', raw: '', lines: [] };
-        } else if (!res.ok) {
-          monthResult = { status: 'error', raw: '', lines: [], message: `HTTP ${res.status}` };
-        } else {
-          const text = await res.text();
-          const lines = text.split('\n').filter(l => l.trim().length > 0);
-          monthResult = lines.length ? { status: 'ok', raw: text, lines } : { status: 'empty', raw: '', lines: [] };
-        }
-        if (monthResult.status !== 'error') logCache.set(monthKey, monthResult);
-      }
-
-      if (monthResult.status === 'error' || monthResult.status === 'empty') {
-        result = { status: monthResult.status, raw: '', lines: [], message: monthResult.message };
-      } else {
-        const filteredLines = filterLinesByDay(monthResult.lines, year, month, day);
-        result = filteredLines.length
-          ? { status: 'ok', raw: filteredLines.join('\n'), lines: filteredLines }
-          : { status: 'empty', raw: '', lines: [] };
-      }
-    } else {
-      const url = `https://${host}/channel/${encodeURIComponent(channel)}/${year}/${month}/${day}`;
-      const res = await fetchWithTimeout(url, 25000, abortSignal);
-      if (res.status === 404) {
-        result = { status: 'empty', raw: '', lines: [] };
-      } else if (!res.ok) {
-        result = { status: 'error', raw: '', lines: [], message: `HTTP ${res.status}` };
-      } else {
-        const text = await res.text();
-        const lines = text.split('\n').filter(l => l.trim().length > 0);
-        result = lines.length ? { status: 'ok', raw: text, lines } : { status: 'empty', raw: '', lines: [] };
-      }
-    }
-
-    if (result.status !== 'error') logCache.set(key, result);
-    return result;
-  }
-
-  async function fetchUserMonth(host, channel, username, year, month, abortSignal) {
-    const key = `${host}|${channel}|user:${username.toLowerCase()}|${year}-${month}`;
-    if (logCache.has(key)) return logCache.get(key);
-    const url = `https://${host}/channel/${encodeURIComponent(channel)}/user/${encodeURIComponent(username)}/${year}/${month}`;
-    const res = await fetchWithTimeout(url, 25000, abortSignal);
-    let result;
-    if (res.status === 404) {
-      result = { status: 'empty', raw: '', lines: [] };
-    } else if (!res.ok) {
-      result = { status: 'error', raw: '', lines: [], message: `HTTP ${res.status}` };
-    } else {
-      const text = await res.text();
-      const lines = text.split('\n').filter(l => l.trim().length > 0);
-      result = lines.length ? { status: 'ok', raw: text, lines } : { status: 'empty', raw: '', lines: [] };
-    }
-    if (result.status !== 'error') logCache.set(key, result);
-    return result;
-  }
-
-  // ---- Render helpers ----
+  // ---- Render helpers (unchanged) ----
   function renderDayBody(container, lines, filterQuery) {
     const pre = document.createElement('pre');
     pre.className = 'log-lines';
@@ -1481,26 +1529,50 @@
   cancelBtn.addEventListener('click', cancelSearch);
 
   // =========================================================
-  // Main LOAD function with provider fallback and index support
+  // Main LOAD function with provider fallback and ID support
   // =========================================================
   async function loadRange() {
-    const channel = channelInput.value.trim().replace(/^@/, '').toLowerCase();
-    if (!channel) { channelInput.focus(); return; }
+    const rawInput = channelInput.value.trim();
+    const rawChannel = rawInput.replace(/^@/, '');
+    if (!rawChannel) { channelInput.focus(); return; }
+
+    let isId = false;
+    let channelId = null;
+    if (isIdInput(rawChannel)) {
+      isId = true;
+      channelId = extractId(rawChannel);
+    }
+
+    let channel = rawChannel;
+    if (!isId) {
+      channel = channel.replace(/^@/, '').toLowerCase();
+    }
+
     const username = usernameInput.value.trim().replace(/^@/, '');
     const userMode = !!username;
 
     loadBtn.disabled = true;
-    const check = await ensureChecked(channel);
-    if (!check || !check.ok) {
-      loadBtn.disabled = false;
-      showEmptyState(`<div>Fix the channel name above before loading. See the error under the field.</div>`);
-      setFooterDone('Channel not found in any provider.');
-      return;
+
+    if (isId) {
+      // skip provider check
+    } else {
+      const check = await ensureChecked(channel);
+      if (!check || !check.ok) {
+        loadBtn.disabled = false;
+        showEmptyState(`<div>Fix the channel name above before loading. See the error under the field.</div>`);
+        setFooterDone('Channel not found in any provider.');
+        return;
+      }
     }
 
-    const availableProviders = providerStatuses
-      .map((state, idx) => state === 'available' ? idx : -1)
-      .filter(idx => idx !== -1);
+    let availableProviders;
+    if (isId) {
+      availableProviders = PROVIDERS.map((_, idx) => idx);
+    } else {
+      availableProviders = providerStatuses
+        .map((state, idx) => state === 'available' ? idx : -1)
+        .filter(idx => idx !== -1);
+    }
 
     if (availableProviders.length === 0) {
       loadBtn.disabled = false;
@@ -1509,7 +1581,6 @@
       return;
     }
 
-    // Start loading state – show cancel button
     loading = true;
     cancelRequested = false;
     activeAbortController = new AbortController();
@@ -1524,12 +1595,19 @@
     progressPct.textContent = '0%';
     setFooterLoading(0, 0, 0);
 
-    const startIdx = availableProviders.indexOf(selectedProviderIdx);
+    let startIdx;
+    if (isId) {
+      startIdx = availableProviders.indexOf(selectedProviderIdx);
+      if (startIdx === -1) startIdx = 0;
+    } else {
+      startIdx = availableProviders.indexOf(selectedProviderIdx);
+    }
     const orderedProviders = availableProviders.slice(startIdx).concat(availableProviders.slice(0, startIdx));
 
     let success = false;
     let finalLabel = '';
     let finalInProgressNote = '';
+    const urlChannel = isId ? rawChannel : channel;
 
     for (const providerIdx of orderedProviders) {
       if (cancelRequested) break;
@@ -1542,8 +1620,9 @@
       let list, isFuture, label, inProgressNote, invalid;
       let useIndex = false;
 
-      if (!userMode) {
-        const index = await getChannelIndex(host, channel, activeAbortController ? activeAbortController.signal : undefined);
+      // Skip index fetch for Day view – just use fallback list
+      if (!isId && !userMode && currentView !== 'day') {
+        const index = await getChannelIndex(host, urlChannel, activeAbortController ? activeAbortController.signal : undefined);
         if (cancelRequested) break;
         if (index && !cancelRequested) {
           let year, month, day;
@@ -1611,7 +1690,7 @@
         autoSwitchNote.style.display = 'block';
       }
 
-      currentChannel = channel;
+      currentChannel = urlChannel;
       currentUsername = username;
       currentUserMode = userMode;
       dateList = list;
@@ -1621,7 +1700,7 @@
       corsBanner.classList.remove('visible');
 
       const total = list.length;
-      statusText.textContent = `Loading ${channel} from ${provider.label}`;
+      statusText.textContent = `Loading ${urlChannel} from ${provider.label}`;
       progressFill.style.width = '0%';
       progressPct.textContent = '0%';
       setFooterLoading(0, total, 0);
@@ -1643,12 +1722,12 @@
             try {
               if (userMode) {
                 if (currentView === 'day' && item.day !== null) {
-                  result = await fetchDay(host, channel, item.year, item.month, item.day, username, activeAbortController ? activeAbortController.signal : undefined);
+                  result = await fetchDay(host, urlChannel, item.year, item.month, item.day, username, activeAbortController ? activeAbortController.signal : undefined);
                 } else {
-                  result = await fetchUserMonth(host, channel, username, item.year, item.month, activeAbortController ? activeAbortController.signal : undefined);
+                  result = await fetchUserMonth(host, urlChannel, username, item.year, item.month, activeAbortController ? activeAbortController.signal : undefined);
                 }
               } else {
-                result = await fetchDay(host, channel, item.year, item.month, item.day, null, activeAbortController ? activeAbortController.signal : undefined);
+                result = await fetchDay(host, urlChannel, item.year, item.month, item.day, null, activeAbortController ? activeAbortController.signal : undefined);
               }
             } catch (err) {
               if (err.name === 'AbortError') {
@@ -1673,7 +1752,7 @@
             }
             completed++;
             const pct = Math.round((completed / total) * 100);
-            statusText.textContent = `Loading ${channel} from ${provider.label} (${completed} / ${total})`;
+            statusText.textContent = `Loading ${urlChannel} from ${provider.label} (${completed} / ${total})`;
             progressPct.textContent = `${pct}%`;
             progressFill.style.width = `${pct}%`;
             setFooterLoading(completed, total, okSoFar);
@@ -1701,7 +1780,7 @@
         success = true;
         finalLabel = label;
         finalInProgressNote = inProgressNote || '';
-        const who = userMode ? `${username} in ${channel}` : channel;
+        const who = userMode ? `${username} in ${urlChannel}` : urlChannel;
         setFooterDone(`${who}, ${label} (${provider.label}): ${okDays}/${total} with logs, ${totalLines} lines total.${finalInProgressNote}`);
         window._logSplicerLabel = label;
         selectProvider(providerIdx);
@@ -1722,7 +1801,6 @@
       }
     }
 
-    // Clean up loading state
     loading = false;
     setControlsDisabled(false);
     reverseBtn.disabled = false;
@@ -1744,16 +1822,16 @@
 
     autoSwitchNote.style.display = 'none';
     const msg = userMode
-      ? `<div>No logs found for user ${username} in ${channel} on any provider for the selected period.</div>
+      ? `<div>No logs found for user ${username} in ${urlChannel} on any provider for the selected period.</div>
          <div style="font-size:11px;max-width:440px;">They may not have chatted there during this period,
          or none of the providers have data that far back. Try adjusting the date or provider.</div>`
-      : `<div>No chat logs found for ${channel} on any provider for the selected period.</div>
+      : `<div>No chat logs found for ${urlChannel} on any provider for the selected period.</div>
          <div style="font-size:11px;max-width:440px;">The channel may not have been tracked by any
          provider during this period, or may have opted out of logging. Try a different date.</div>`;
     showEmptyState(msg);
     setFooterDone(userMode
-      ? `${username} in ${channel}: no logs found on any provider.`
-      : `${channel}: no logs found on any provider.`);
+      ? `${username} in ${urlChannel}: no logs found on any provider.`
+      : `${urlChannel}: no logs found on any provider.`);
     window._logSplicerLabel = finalLabel;
     loadBtn.disabled = false;
   }
