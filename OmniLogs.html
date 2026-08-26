@@ -446,6 +446,66 @@
   #cors-banner code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 4px; }
 
   .hidden-field { display: none !important; }
+
+  /* Confirmation overlay for large filter */
+  .confirm-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 999;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(4px);
+  }
+  .confirm-overlay.visible { display: flex; }
+  .confirm-box {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    max-width: 480px;
+    width: 90%;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+  }
+  .confirm-box h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--error);
+    margin-top: 0;
+    margin-bottom: 10px;
+  }
+  .confirm-box p {
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--muted);
+    margin: 8px 0;
+  }
+  .confirm-box .btn-group {
+    display: flex;
+    gap: 10px;
+    margin-top: 18px;
+    justify-content: flex-end;
+  }
+  .confirm-box .btn-group button {
+    padding: 8px 18px;
+    border: none;
+    border-radius: 6px;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .confirm-box .btn-group .btn-confirm {
+    background: var(--accent);
+    color: white;
+  }
+  .confirm-box .btn-group .btn-confirm:hover { background: #7d38e0; }
+  .confirm-box .btn-group .btn-cancel {
+    background: var(--panel);
+    color: var(--muted);
+    border: 1px solid var(--border);
+  }
+  .confirm-box .btn-group .btn-cancel:hover { color: var(--text); }
 </style>
 </head>
 <body>
@@ -552,6 +612,20 @@
   </footer>
 </div>
 
+<!-- Confirmation overlay for filter -->
+<div class="confirm-overlay" id="confirmOverlay">
+  <div class="confirm-box">
+    <h2>⚠️ Large Filter Request</h2>
+    <p>Your filter matches <strong id="matchCount">0</strong> lines of logs.</p>
+    <p>Showing this many results may impact performance (high RAM usage).</p>
+    <p>Do you want to continue?</p>
+    <div class="btn-group">
+      <button class="btn-cancel" id="confirmCancel">Cancel</button>
+      <button class="btn-confirm" id="confirmOk">Yes, show all</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (function () {
   // Hardcoded fallback list
@@ -617,6 +691,12 @@
   const brandWrap = document.getElementById('brandWrap');
   const cancelBtn = document.getElementById('cancelBtn');
   const currentYearSpan = document.getElementById('current-year');
+
+  // Confirmation overlay elements
+  const confirmOverlay = document.getElementById('confirmOverlay');
+  const matchCountSpan = document.getElementById('matchCount');
+  const confirmOkBtn = document.getElementById('confirmOk');
+  const confirmCancelBtn = document.getElementById('confirmCancel');
 
   // Update disclaimer year
   if (currentYearSpan) {
@@ -755,6 +835,10 @@
 
   let cancelRequested = false;
   let activeAbortController = null;
+
+  // Variables for filter
+  let pendingFilterQuery = null;
+  let currentFilterQuery = ''; // stores last applied filter to avoid re-rendering
 
   function daysInMonth(year, month) { return new Date(year, month, 0).getDate(); }
   function pad(n) { return String(n).padStart(2, '0'); }
@@ -1042,7 +1126,7 @@
   // Fetching + caching with ID support
   // =========================================================
 
-  const logCache = new Map();
+  let logCache = new Map(); // global cache
 
   function filterLinesByDay(lines, targetYear, targetMonth, targetDay) {
     const dateStr = `${targetYear}-${pad(targetMonth)}-${pad(targetDay)}`;
@@ -1397,7 +1481,7 @@
   }
 
   // ---- Build month box ----
-  function buildMonthGroupBox(g) {
+  function buildMonthGroupBox(g, expandByDefault = false) {
     const el = document.createElement('div');
     el.className = 'month-box';
 
@@ -1424,10 +1508,22 @@
 
     const bodyContainer = document.createElement('div');
     bodyContainer.className = 'month-box-body';
-    bodyContainer.style.display = 'none';
+    // If expandByDefault is true, show body immediately, otherwise hidden
+    bodyContainer.style.display = expandByDefault ? 'block' : 'none';
     el.appendChild(bodyContainer);
 
-    const state = { el, headerRight: right, chevronEl: chevron, bodyContainer, indices: g.indices, expanded: false, builtRows: false };
+    const state = { 
+      el, 
+      headerRight: right, 
+      chevronEl: chevron, 
+      bodyContainer, 
+      indices: g.indices, 
+      expanded: expandByDefault, 
+      builtRows: false 
+    };
+
+    // If expanded by default, we need to build the rows after the data is loaded
+    // The header click will toggle expansion
 
     header.addEventListener('click', () => {
       state.expanded = !state.expanded;
@@ -1462,9 +1558,11 @@
     idxToGroup = new Array(dateList.length).fill(-1);
     const q = filterInput.value.trim();
 
+    // Determine flat mode: Day view, or user mode with Month view, or any view with filter active
     const flatMode = currentView === 'day' || (currentUserMode && currentView === 'month') || q;
 
     if (flatMode) {
+      // Flat mode: expand all days and show logs (filtered if q)
       let lastMonthKey = null;
       const order = dateList.map((_, i) => i);
       if (reverseOrder) order.reverse();
@@ -1478,6 +1576,7 @@
         slotEls[i] = slot;
         main.appendChild(slot.el);
         if (dayResults[i]) fillSlotExpanded(slot, dayResults[i], q);
+        else fillSlotExpanded(slot, { status: 'error', lines: [], message: 'not loaded' }, q);
       });
       return;
     }
@@ -1486,143 +1585,165 @@
     const groupsRaw = buildMonthGroupsFromList(dateList);
     groupsRaw.forEach((g, gi) => g.indices.forEach(i => idxToGroup[i] = gi));
     monthGroups = new Array(groupsRaw.length);
+
+    // Determine if we should expand by default: only in Month view (currentView === 'month' and no user mode)
+    const expandDefault = (currentView === 'month' && !currentUserMode);
+
     const displayOrderGroups = reverseOrder ? groupsRaw.slice().reverse() : groupsRaw;
     displayOrderGroups.forEach(g => {
       const gi = groupsRaw.indexOf(g);
-      const state = buildMonthGroupBox(g);
+      const state = buildMonthGroupBox(g, expandDefault);
       monthGroups[gi] = state;
       main.appendChild(state.el);
+      // If expanded by default, we need to build the rows after data is loaded
+      // But the data may already be loaded, so we call rebuildMonthBody
+      if (expandDefault && state.expanded) {
+        // But we need to wait until dayResults are populated; we'll call after render
+        // Actually, we'll rebuild after renderMain finishes
+        // We'll store a flag to rebuild after all groups are created
+        setTimeout(() => {
+          if (state.expanded) {
+            rebuildMonthBody(gi);
+          }
+        }, 0);
+      }
     });
+
+    // Update headers for any already loaded data
     groupsRaw.forEach((_, gi) => updateGroupHeader(gi));
+    // If expandDefault, also ensure the body is rebuilt after data is loaded (done in setTimeout above)
   }
 
+  // ===== OPTIMISED FILTER WITH SAFEGUARD =====
   let filterDebounceTimer = null;
+
   filterInput.addEventListener('input', () => {
     clearTimeout(filterDebounceTimer);
-    filterDebounceTimer = setTimeout(() => { if (dateList.length) renderMain(); }, 200);
+    filterDebounceTimer = setTimeout(() => {
+      const q = filterInput.value.trim();
+      // If overlay is visible and user types again, dismiss it
+      if (confirmOverlay.classList.contains('visible')) {
+        confirmOverlay.classList.remove('visible');
+        pendingFilterQuery = null;
+      }
+      if (!dateList.length) {
+        renderMain();
+        if (q) {
+          setFooterDone('No logs are loaded. Load some logs first, then filter.');
+        } else {
+          updateFooterAfterRender();
+        }
+        return;
+      }
+
+      // If query is empty, revert to normal view
+      if (!q) {
+        currentFilterQuery = '';
+        renderMain();
+        updateFooterAfterRender();
+        return;
+      }
+
+      // Count matching lines once
+      let loadedDays = 0;
+      let matchCount = 0;
+      const queryLower = q.toLowerCase();
+      const results = dayResults; // local reference for speed
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i];
+        if (r && r.status === 'ok' && r.lines && r.lines.length) {
+          loadedDays++;
+          const lines = r.lines;
+          for (let j = 0; j < lines.length; j++) {
+            if (lines[j].toLowerCase().includes(queryLower)) {
+              matchCount++;
+            }
+          }
+        }
+      }
+
+      if (loadedDays === 0) {
+        renderMain();
+        setFooterDone('No logs are loaded. Load some logs first, then filter.');
+        return;
+      }
+
+      // Check threshold: 75,000 lines
+      if (matchCount > 75000) {
+        matchCountSpan.textContent = matchCount.toLocaleString();
+        pendingFilterQuery = q;
+        confirmOverlay.classList.add('visible');
+        return;
+      }
+
+      // Apply filter immediately – pass the count to avoid recounting
+      applyFilter(q, matchCount);
+    }, 300);
   });
 
-  function setFooterLoading(completed, total, ok) {
-    summaryPulse.style.display = 'inline-block';
-    summaryText.textContent = `Loading ${currentChannel}... ${completed}/${total} fetched (${ok} with logs so far)`;
-  }
-  function setFooterDone(text) {
-    summaryPulse.style.display = 'none';
-    summaryText.textContent = text;
-  }
-
-  function updateDisplayForResult(idx, result) {
-    const q = filterInput.value.trim();
-    const flatMode = currentView === 'day' || (currentUserMode && currentView === 'month') || q;
-
-    if (flatMode) {
-      if (slotEls[idx]) fillSlotExpanded(slotEls[idx], result, q);
-    } else {
-      if (slotEls[idx]) fillSlotCollapsed(slotEls[idx], result);
-      const gi = idxToGroup[idx];
-      if (gi !== undefined && gi >= 0) {
-        updateGroupHeader(gi);
-        if (result.status === 'ok' && monthGroups[gi] && monthGroups[gi].expanded) {
-          rebuildMonthBody(gi);
+  function applyFilter(query, matchCount) {
+    // Only re-render if the query changed
+    if (currentFilterQuery !== query) {
+      currentFilterQuery = query;
+      renderMain();
+    }
+    const loadedDays = dayResults.filter(r => r && r.status === 'ok').length;
+    // If matchCount wasn't provided, count it (fallback)
+    if (matchCount === undefined) {
+      matchCount = 0;
+      const q = query.toLowerCase();
+      for (const r of dayResults) {
+        if (r && r.status === 'ok' && r.lines) {
+          for (const line of r.lines) {
+            if (line.toLowerCase().includes(q)) matchCount++;
+          }
         }
       }
     }
+    setFooterDone(`${currentChannel}: ${loadedDays} days loaded, ${matchCount} lines match filter "${query}".`);
   }
 
-  // ---- Fallback date lists (used when index not available) ----
-  function buildDateList(view) {
-    const today = new Date();
-    const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-
-    if (view === 'day') {
-      const raw = dayInput.value;
-      if (!raw) return { list: [], isFuture: false, label: '', invalid: true };
-      const [y, m, d] = raw.split('-').map(n => parseInt(n, 10));
-      const target = new Date(y, m - 1, d);
-      const isFuture = target > todayMidnight;
-      const label = `${MONTHS[m-1]} ${d}, ${y}`;
-      return { list: isFuture ? [] : [{ year: y, month: m, day: d }], isFuture, label };
+  // ---- Confirmation button handlers ----
+  confirmOkBtn.addEventListener('click', () => {
+    confirmOverlay.classList.remove('visible');
+    if (pendingFilterQuery) {
+      const q = pendingFilterQuery;
+      pendingFilterQuery = null;
+      applyFilter(q);
     }
+  });
 
-    if (view === 'month') {
-      const year = parseInt(yearInput.value, 10);
-      const month = parseInt(monthSelect.value, 10);
-      const fullDays = daysInMonth(year, month);
-      const selectedMonthStart = new Date(year, month - 1, 1);
-      const isCurrentMonth = year === today.getFullYear() && month === today.getMonth() + 1;
-      const isFuture = selectedMonthStart > todayMidnight && !isCurrentMonth;
-      let total;
-      if (isFuture) total = 0;
-      else if (isCurrentMonth) total = today.getDate();
-      else total = fullDays;
-      const list = Array.from({ length: total }, (_, i) => ({ year, month, day: i + 1 }));
-      const label = `${MONTHS[month-1]} ${year}`;
-      const inProgressNote = (isCurrentMonth && total < fullDays)
-        ? ` (${label} is still in progress: showing through the ${total}${ordinal(total)}. Reload later for more.)`
-        : '';
-      return { list, isFuture, label, inProgressNote };
-    }
+  confirmCancelBtn.addEventListener('click', () => {
+    confirmOverlay.classList.remove('visible');
+    pendingFilterQuery = null;
+    // Clear filter input and re-render without filter
+    filterInput.value = '';
+    currentFilterQuery = '';
+    renderMain();
+    updateFooterAfterRender();
+    setFooterDone('Filter cancelled.');
+  });
 
-    const year = parseInt(yearInput.value, 10);
-    const isFutureYear = year > today.getFullYear();
-    const isCurrentYear = year === today.getFullYear();
-    let list = [];
-    if (!isFutureYear) {
-      for (let m = 1; m <= 12; m++) {
-        if (isCurrentYear && m > today.getMonth() + 1) break;
-        const dim = daysInMonth(year, m);
-        const limit = (isCurrentYear && m === today.getMonth() + 1) ? today.getDate() : dim;
-        for (let d = 1; d <= limit; d++) list.push({ year, month: m, day: d });
-      }
+  // Close overlay on backdrop click
+  confirmOverlay.addEventListener('click', (e) => {
+    if (e.target === confirmOverlay) {
+      confirmCancelBtn.click();
     }
-    const label = `${year}`;
-    const fullDaysInYear = (new Date(year, 11, 31) - new Date(year, 0, 1)) / 86400000 + 1;
-    const inProgressNote = (isCurrentYear && list.length < fullDaysInYear)
-      ? ` (${year} is still in progress: showing through today. Reload later for more.)`
-      : '';
-    return { list, isFuture: isFutureYear, label, inProgressNote };
+  });
+
+  // ---- Helper to update footer after render ----
+  function updateFooterAfterRender() {
+    if (!dateList.length) {
+      setFooterDone('No logs loaded yet.');
+      return;
+    }
+    const totalDays = dateList.length;
+    const loaded = dayResults.filter(r => r && r.status === 'ok').length;
+    const totalLines = dayResults.reduce((sum, r) => r && r.status === 'ok' ? sum + r.lines.length : sum, 0);
+    setFooterDone(`${currentChannel}: ${loaded}/${totalDays} days loaded, ${totalLines} lines.`);
   }
 
-  function buildDateListUserMode(view) {
-    const today = new Date();
-    const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-
-    if (view === 'day') {
-      const raw = dayInput.value;
-      if (!raw) return { list: [], isFuture: false, label: '', invalid: true };
-      const [y, m, d] = raw.split('-').map(n => parseInt(n, 10));
-      const target = new Date(y, m - 1, d);
-      const isFuture = target > todayMidnight;
-      const label = `${MONTHS[m-1]} ${d}, ${y}`;
-      return { list: isFuture ? [] : [{ year: y, month: m, day: d }], isFuture, label };
-    }
-
-    if (view === 'month') {
-      const year = parseInt(yearInput.value, 10);
-      const month = parseInt(monthSelect.value, 10);
-      const monthStart = new Date(year, month - 1, 1);
-      const isCurrentMonth = year === today.getFullYear() && month === today.getMonth() + 1;
-      const isFuture = monthStart > todayMidnight && !isCurrentMonth;
-      const label = `${MONTHS[month-1]} ${year}`;
-      return { list: isFuture ? [] : [{ year, month, day: null }], isFuture, label };
-    }
-
-    const year = parseInt(yearInput.value, 10);
-    const isFutureYear = year > today.getFullYear();
-    const isCurrentYear = year === today.getFullYear();
-    let list = [];
-    if (!isFutureYear) {
-      const lastMonth = isCurrentYear ? today.getMonth() + 1 : 12;
-      for (let m = 1; m <= lastMonth; m++) list.push({ year, month: m, day: null });
-    }
-    const label = `${year}`;
-    const inProgressNote = (isCurrentYear && list.length < 12)
-      ? ` (${year} is still in progress: showing through the current month. Reload later for more.)`
-      : '';
-    return { list, isFuture: isFutureYear, label, inProgressNote };
-  }
-
-  // ----- Cancel handler -----
+  // ---- Cancel handler for loading ----
   function cancelSearch() {
     if (!loading) return;
     cancelRequested = true;
@@ -1640,6 +1761,15 @@
   // Main LOAD function with instance fallback and ID support
   // =========================================================
   async function loadRange() {
+    // Clear the log cache on new search
+    logCache.clear();
+
+    // Clear any pending filter
+    filterInput.value = '';
+    pendingFilterQuery = null;
+    currentFilterQuery = '';
+    confirmOverlay.classList.remove('visible');
+
     const rawInput = channelInput.value.trim();
     const rawChannel = rawInput.replace(/^@/, '');
     if (!rawChannel) { channelInput.focus(); return; }
@@ -1944,6 +2074,7 @@
     loadBtn.disabled = false;
   }
 
+  // ---- Brand wrap (reset) ----
   brandWrap.addEventListener('click', () => {
     if (loading) {
       cancelSearch();
@@ -1953,6 +2084,7 @@
     slotEls = [];
     monthGroups = [];
     idxToGroup = [];
+    logCache.clear(); // also clear cache on reset
     main.innerHTML = '';
     showEmptyState(welcomeText);
     setFooterDone('No logs loaded yet.');
@@ -1965,6 +2097,9 @@
     channelInput.value = '';
     usernameInput.value = '';
     filterInput.value = '';
+    pendingFilterQuery = null;
+    currentFilterQuery = '';
+    confirmOverlay.classList.remove('visible');
     setDefaultDates();
     setView('month');
     setReverse(true);
@@ -1984,9 +2119,132 @@
     statusBar.classList.remove('visible');
   });
 
+  // ---- Event listeners for LOAD ----
   loadBtn.addEventListener('click', loadRange);
   channelInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadRange(); });
   usernameInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadRange(); });
+
+  // Helper functions for footer (already defined)
+  function setFooterLoading(completed, total, ok) {
+    summaryPulse.style.display = 'inline-block';
+    summaryText.textContent = `Loading ${currentChannel}... ${completed}/${total} fetched (${ok} with logs so far)`;
+  }
+  function setFooterDone(text) {
+    summaryPulse.style.display = 'none';
+    summaryText.textContent = text;
+  }
+
+  function updateDisplayForResult(idx, result) {
+    const q = filterInput.value.trim();
+    const flatMode = currentView === 'day' || (currentUserMode && currentView === 'month') || q;
+
+    if (flatMode) {
+      if (slotEls[idx]) fillSlotExpanded(slotEls[idx], result, q);
+    } else {
+      if (slotEls[idx]) fillSlotCollapsed(slotEls[idx], result);
+      const gi = idxToGroup[idx];
+      if (gi !== undefined && gi >= 0) {
+        updateGroupHeader(gi);
+        if (result.status === 'ok' && monthGroups[gi] && monthGroups[gi].expanded) {
+          rebuildMonthBody(gi);
+        }
+      }
+    }
+  }
+
+  // ---- Fallback date lists (used when index not available) ----
+  function buildDateList(view) {
+    const today = new Date();
+    const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+
+    if (view === 'day') {
+      const raw = dayInput.value;
+      if (!raw) return { list: [], isFuture: false, label: '', invalid: true };
+      const [y, m, d] = raw.split('-').map(n => parseInt(n, 10));
+      const target = new Date(y, m - 1, d);
+      const isFuture = target > todayMidnight;
+      const label = `${MONTHS[m-1]} ${d}, ${y}`;
+      return { list: isFuture ? [] : [{ year: y, month: m, day: d }], isFuture, label };
+    }
+
+    if (view === 'month') {
+      const year = parseInt(yearInput.value, 10);
+      const month = parseInt(monthSelect.value, 10);
+      const fullDays = daysInMonth(year, month);
+      const selectedMonthStart = new Date(year, month - 1, 1);
+      const isCurrentMonth = year === today.getFullYear() && month === today.getMonth() + 1;
+      const isFuture = selectedMonthStart > todayMidnight && !isCurrentMonth;
+      let total;
+      if (isFuture) total = 0;
+      else if (isCurrentMonth) total = today.getDate();
+      else total = fullDays;
+      const list = Array.from({ length: total }, (_, i) => ({ year, month, day: i + 1 }));
+      const label = `${MONTHS[month-1]} ${year}`;
+      const inProgressNote = (isCurrentMonth && total < fullDays)
+        ? ` (${label} is still in progress: showing through the ${total}${ordinal(total)}. Reload later for more.)`
+        : '';
+      return { list, isFuture, label, inProgressNote };
+    }
+
+    const year = parseInt(yearInput.value, 10);
+    const isFutureYear = year > today.getFullYear();
+    const isCurrentYear = year === today.getFullYear();
+    let list = [];
+    if (!isFutureYear) {
+      for (let m = 1; m <= 12; m++) {
+        if (isCurrentYear && m > today.getMonth() + 1) break;
+        const dim = daysInMonth(year, m);
+        const limit = (isCurrentYear && m === today.getMonth() + 1) ? today.getDate() : dim;
+        for (let d = 1; d <= limit; d++) list.push({ year, month: m, day: d });
+      }
+    }
+    const label = `${year}`;
+    const fullDaysInYear = (new Date(year, 11, 31) - new Date(year, 0, 1)) / 86400000 + 1;
+    const inProgressNote = (isCurrentYear && list.length < fullDaysInYear)
+      ? ` (${year} is still in progress: showing through today. Reload later for more.)`
+      : '';
+    return { list, isFuture: isFutureYear, label, inProgressNote };
+  }
+
+  function buildDateListUserMode(view) {
+    const today = new Date();
+    const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+
+    if (view === 'day') {
+      const raw = dayInput.value;
+      if (!raw) return { list: [], isFuture: false, label: '', invalid: true };
+      const [y, m, d] = raw.split('-').map(n => parseInt(n, 10));
+      const target = new Date(y, m - 1, d);
+      const isFuture = target > todayMidnight;
+      const label = `${MONTHS[m-1]} ${d}, ${y}`;
+      return { list: isFuture ? [] : [{ year: y, month: m, day: d }], isFuture, label };
+    }
+
+    if (view === 'month') {
+      const year = parseInt(yearInput.value, 10);
+      const month = parseInt(monthSelect.value, 10);
+      const monthStart = new Date(year, month - 1, 1);
+      const isCurrentMonth = year === today.getFullYear() && month === today.getMonth() + 1;
+      const isFuture = monthStart > todayMidnight && !isCurrentMonth;
+      const label = `${MONTHS[month-1]} ${year}`;
+      return { list: isFuture ? [] : [{ year, month, day: null }], isFuture, label };
+    }
+
+    const year = parseInt(yearInput.value, 10);
+    const isFutureYear = year > today.getFullYear();
+    const isCurrentYear = year === today.getFullYear();
+    let list = [];
+    if (!isFutureYear) {
+      const lastMonth = isCurrentYear ? today.getMonth() + 1 : 12;
+      for (let m = 1; m <= lastMonth; m++) list.push({ year, month: m, day: null });
+    }
+    const label = `${year}`;
+    const inProgressNote = (isCurrentYear && list.length < 12)
+      ? ` (${year} is still in progress: showing through the current month. Reload later for more.)`
+      : '';
+    return { list, isFuture: isFutureYear, label, inProgressNote };
+  }
+
 })();
 </script>
 </body>
