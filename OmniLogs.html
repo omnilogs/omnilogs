@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OmniLogs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:opsz@14..32&display=swap" rel="stylesheet">
 <style>
   :root {
     --bg: #0b0b0f;
@@ -25,7 +28,7 @@
     padding: 0;
     background: var(--bg);
     color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
     height: 100%;
   }
 
@@ -104,7 +107,7 @@
   input:disabled, select:disabled, button:disabled { opacity: 0.55; cursor: default; }
   input#channel, input#username {
     width: 170px;
-    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-family: inherit;
     transition: border-color 0.15s ease;
   }
   input#channel.checking { border-color: var(--muted); }
@@ -146,7 +149,7 @@
     align-items: center;
     gap: 7px;
     cursor: pointer;
-    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-family: inherit;
   }
   .provider-picker-btn .caret {
     margin-left: auto;
@@ -177,7 +180,7 @@
     padding: 7px 10px;
     cursor: pointer;
     font-size: 12.5px;
-    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-family: inherit;
   }
   .provider-option:hover { background: var(--panel); }
   .provider-option.selected { background: var(--accent-dim); color: #fff; }
@@ -304,6 +307,23 @@
   }
   @keyframes blink { 50% { opacity: 0; } }
 
+  /* Pulse cursor animation */
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.3; transform: scale(0.6); }
+  }
+
+  .cursor-pulse {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-left: 4px;
+    animation: pulse 1.2s ease-in-out infinite;
+    vertical-align: middle;
+  }
+
   .month-divider {
     background: var(--panel-2);
     border-bottom: 1px solid var(--border);
@@ -351,7 +371,7 @@
     padding: 7px 20px;
     font-size: 12px;
     color: var(--muted);
-    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-family: inherit;
     display: flex;
     justify-content: space-between;
     z-index: 5;
@@ -438,7 +458,7 @@
     </div>
 
     <div class="field">
-      <label>Provider</label>
+      <label>Instance</label>
       <div class="provider-picker" id="providerPicker">
         <button type="button" class="provider-picker-btn" id="providerBtn">
           <span class="led" id="providerBtnLed"></span>
@@ -508,7 +528,7 @@
 
   <div id="cors-banner">
     Could not reach <code id="corsHost">logs.potat.app</code> from this page. The browser blocked it (likely CORS,
-    since that API is not set up for direct in-browser requests from other sites). Try a different provider
+    since that API is not set up for direct in-browser requests from other sites). Try a different instance
     above, it may allow it.
   </div>
 
@@ -613,7 +633,7 @@
     monthSelect.appendChild(opt);
   });
 
-  // --- Provider status fetching from /instances ---
+  // --- Instance status fetching from /instances ---
   let providerOptionEls = [];
   let selectedProviderIdx = 0;
   let providerStatuses = [];
@@ -687,13 +707,13 @@
         PROVIDERS = FALLBACK_PROVIDERS.slice();
       }
     } catch (e) {
-      console.warn('Failed to fetch provider instances, using fallback list:', e);
+      console.warn('Failed to fetch instances, using fallback list:', e);
       PROVIDERS = FALLBACK_PROVIDERS.slice();
     }
     rebuildProviderOptions(PROVIDERS);
   }
 
-  // --- Initialize provider list ---
+  // --- Initialize instance list ---
   rebuildProviderOptions(PROVIDERS);
   fetchProvidersFromInstances();
 
@@ -780,16 +800,34 @@
   function showEmptyState(html) {
     main.innerHTML = `<div class="empty-state">${html}</div>`;
   }
-  showEmptyState(`
-    <div>Type a channel, choose a day, month or year, and hit Load<span class="cursor"></span></div>
-    <div style="font-size:11px;max-width:440px;">
-      As you type a channel, every provider is checked automatically in the Provider dropdown. The LED
-      next to each name lights up green if that channel is logged there, red if it is not. The best
-      available one is auto-selected. Month and Year views load into collapsed boxes: click a day (or a
-      month, in Year view) to expand it. Searching the filter box expands everything that matches. Add an
-      optional username to pull just that person's messages instead of the whole channel.
+
+  // --- Final welcome text (numbered steps) ---
+  const welcomeText = `
+    <div style="max-width: 460px; margin: 0 auto; text-align: left;">
+      <div style="font-size: 16px; font-weight: 500; color: var(--accent); margin-bottom: 14px;">
+        Search Twitch chat logs across all instances in one place.
+      </div>
+      <p style="font-size: 13px; line-height: 1.8; color: var(--muted); margin: 0 0 2px 0;">
+        <strong>1.</strong> Enter a channel or ID (like id:123). Add an optional username to see a specific person's messages.
+      </p>
+      <p style="font-size: 13px; line-height: 1.8; color: var(--muted); margin: 0 0 2px 0;">
+        <strong>2.</strong> Choose your view (Day, Month, Year) and click LOAD.
+      </p>
+      <p style="font-size: 13px; line-height: 1.8; color: var(--muted); margin: 0 0 2px 0;">
+        <strong>3.</strong> Green dots show instances with logs; red means none available.
+      </p>
+      <p style="font-size: 13px; line-height: 1.8; color: var(--muted); margin: 0 0 2px 0;">
+        <strong>4.</strong> Click any day or month to expand the results.
+      </p>
+      <p style="font-size: 13px; line-height: 1.8; color: var(--muted); margin: 0 0 2px 0;">
+        <strong>5.</strong> Use the Filter box to search within the logs.
+      </p>
+      <div style="margin-top: 16px; font-size: 14px; color: var(--text); display: flex; align-items: center; gap: 6px;">
+        Ready? <span class="cursor-pulse"></span>
+      </div>
     </div>
-  `);
+  `;
+  showEmptyState(welcomeText);
 
   function setView(view) {
     currentView = view;
@@ -816,7 +854,7 @@
   setReverse(true);
 
   // =========================================================
-  // Provider channel-availability checking
+  // Instance channel-availability checking
   // =========================================================
 
   function ledClassForState(state) {
@@ -935,7 +973,7 @@
 
     if (availableIdx.length === 0) {
       channelInput.classList.add('error');
-      channelError.textContent = 'Channel not found in any log provider. Check the spelling, or it may not be logged anywhere.';
+      channelError.textContent = 'Channel not found in any log instance. Check the spelling, or it may not be logged anywhere.';
       channelError.style.display = 'block';
       return { ok: false };
     }
@@ -944,7 +982,7 @@
     const bestIdx = availableIdx[0];
     if (!availableIdx.includes(selectedProviderIdx)) {
       selectProvider(bestIdx);
-      autoSwitchNote.textContent = `Auto-selected ${PROVIDERS[bestIdx].label}: best available provider for this channel.`;
+      autoSwitchNote.textContent = `Auto-selected ${PROVIDERS[bestIdx].label}: best available instance for this channel.`;
       autoSwitchNote.style.display = 'block';
     } else {
       autoSwitchNote.style.display = 'none';
@@ -1600,7 +1638,7 @@
   cancelBtn.addEventListener('click', cancelSearch);
 
   // =========================================================
-  // Main LOAD function with provider fallback and ID support
+  // Main LOAD function with instance fallback and ID support
   // =========================================================
   async function loadRange() {
     const rawInput = channelInput.value.trim();
@@ -1625,13 +1663,13 @@
     loadBtn.disabled = true;
 
     if (isId) {
-      // skip provider check
+      // skip instance check
     } else {
       const check = await ensureChecked(channel);
       if (!check || !check.ok) {
         loadBtn.disabled = false;
         showEmptyState(`<div>Fix the channel name above before loading. See the error under the field.</div>`);
-        setFooterDone('Channel not found in any provider.');
+        setFooterDone('Channel not found in any instance.');
         return;
       }
     }
@@ -1647,8 +1685,8 @@
 
     if (availableProviders.length === 0) {
       loadBtn.disabled = false;
-      showEmptyState(`<div>No providers available for this channel. Check the channel name.</div>`);
-      setFooterDone('No providers found.');
+      showEmptyState(`<div>No instances available for this channel. Check the channel name.</div>`);
+      setFooterDone('No instances found.');
       return;
     }
 
@@ -1661,7 +1699,7 @@
     setControlsDisabled(true);
     reverseBtn.disabled = true;
     statusBar.classList.add('visible');
-    statusText.textContent = 'Scanning providers...';
+    statusText.textContent = 'Scanning instances...';
     progressFill.style.width = '0%';
     progressPct.textContent = '0%';
     setFooterLoading(0, 0, 0);
@@ -1893,16 +1931,16 @@
 
     autoSwitchNote.style.display = 'none';
     const msg = userMode
-      ? `<div>No logs found for user ${username} in ${urlChannel} on any provider for the selected period.</div>
+      ? `<div>No logs found for user ${username} in ${urlChannel} on any instance for the selected period.</div>
          <div style="font-size:11px;max-width:440px;">They may not have chatted there during this period,
-         or none of the providers have data that far back. Try adjusting the date or provider.</div>`
-      : `<div>No chat logs found for ${urlChannel} on any provider for the selected period.</div>
+         or none of the instances have data that far back. Try adjusting the date or instance.</div>`
+      : `<div>No chat logs found for ${urlChannel} on any instance for the selected period.</div>
          <div style="font-size:11px;max-width:440px;">The channel may not have been tracked by any
-         provider during this period, or may have opted out of logging. Try a different date.</div>`;
+         instance during this period, or may have opted out of logging. Try a different date.</div>`;
     showEmptyState(msg);
     setFooterDone(userMode
-      ? `${username} in ${urlChannel}: no logs found on any provider.`
-      : `${urlChannel}: no logs found on any provider.`);
+      ? `${username} in ${urlChannel}: no logs found on any instance.`
+      : `${urlChannel}: no logs found on any instance.`);
     window._logSplicerLabel = finalLabel;
     loadBtn.disabled = false;
   }
@@ -1917,16 +1955,7 @@
     monthGroups = [];
     idxToGroup = [];
     main.innerHTML = '';
-    showEmptyState(`
-      <div>Type a channel, choose a day, month or year, and hit Load<span class="cursor"></span></div>
-      <div style="font-size:11px;max-width:440px;">
-        As you type a channel, every provider is checked automatically in the Provider dropdown. The LED
-        next to each name lights up green if that channel is logged there, red if it is not. The best
-        available one is auto-selected. Month and Year views load into collapsed boxes: click a day (or a
-        month, in Year view) to expand it. Searching the filter box expands everything that matches. Add an
-        optional username to pull just that person's messages instead of the whole channel.
-      </div>
-    `);
+    showEmptyState(welcomeText);
     setFooterDone('No logs loaded yet.');
     window._logSplicerLabel = undefined;
     PROVIDERS.forEach((_, i) => setProviderState(i, 'idle'));
