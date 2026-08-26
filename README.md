@@ -1,3 +1,7 @@
+<a href="https://omnilogs.github.io/omnilogs/OmniLogs.html" target="_blank">
+  <img width="1440" height="300" alt="omnilogs-logo" src="https://github.com/user-attachments/assets/cf1b944a-85ab-4a03-ae3d-85ad3d5428db" />
+</a>
+
 OmniLogs unifies multiple third‑party Twitch log instances into a single, intuitive interface. Key features include automatic instance selection (the tool finds which instance has logs for your channel), comprehensive chat history browsing by day, month, or year, keyword filtering to find specific messages, user‑specific searches to isolate one person's messages in a channel, instance availability indicators (green dots for available logs, red for none), collapsible results (click any day or month to expand), Twitch User ID searches (using the `id:123` format) to find logs of suspended or deactivated accounts, sorting options (Newest to Oldest or vice versa), and a dynamic instance list that automatically updates from a central status endpoint, all wrapped in a clean, modern interface.
 
 This project was created by UmbraGG as an experiment to explore the capabilities of AI‑assisted development using free‑tier Claude Sonnet 5 and DeepSeek models. The goal was to build a fully functional web application with zero manual programming. While I don't plan to actively maintain this project, the code is available for anyone to fork, modify, and improve.
