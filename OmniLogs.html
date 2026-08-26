@@ -43,6 +43,7 @@
 
   .brand-wrap {
     display: flex;
+    flex-direction: column;
     align-items: center;
     margin-right: 14px;
     align-self: center;
@@ -65,6 +66,21 @@
   .brand .accent {
     color: var(--accent);
     text-shadow: 0 0 6px rgba(145, 70, 255, 0.55), 0 0 14px rgba(145, 70, 255, 0.25);
+  }
+
+  .subtitle {
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    text-transform: uppercase;
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    opacity: 0.7;
+    margin-top: 4px;
+  }
+  .subtitle .bracket {
+    color: var(--accent);
+    font-weight: 600;
+    opacity: 0.9;
   }
 
   .field { display: flex; flex-direction: column; gap: 3px; position: relative; }
@@ -418,6 +434,7 @@
   <header>
     <div class="brand-wrap" id="brandWrap">
       <div class="brand"><span class="accent">Omni</span>Logs</div>
+      <div class="subtitle"><span class="bracket">[</span> Ultimate Twitch Logs Tool <span class="bracket">]</span></div>
     </div>
 
     <div class="field">
@@ -518,7 +535,8 @@
 
 <script>
 (function () {
-  const PROVIDERS = [
+  // Hardcoded fallback list
+  const FALLBACK_PROVIDERS = [
     { label: 'logs.potat.app',         host: 'logs.potat.app' },
     { label: 'logs.spanix.team',       host: 'logs.spanix.team' },
     { label: 'logs.nadeko.net',        host: 'logs.nadeko.net' },
@@ -534,6 +552,8 @@
     { label: 'logs.twitchmetrics.xyz', host: 'logs.twitchmetrics.xyz' },
     { label: 'logs.jimmyboy.dev',      host: 'logs.jimmyboy.dev' },
   ];
+
+  let PROVIDERS = FALLBACK_PROVIDERS.slice();
 
   // Helper: detect ID input
   function isIdInput(str) {
@@ -593,32 +613,90 @@
     monthSelect.appendChild(opt);
   });
 
-  // Custom provider picker
+  // --- Provider status fetching from /instances ---
+  let providerOptionEls = [];
   let selectedProviderIdx = 0;
-  const providerOptionEls = PROVIDERS.map((p, i) => {
-    const row = document.createElement('div');
-    row.className = 'provider-option';
-    const led = document.createElement('span');
-    led.className = 'led';
-    const label = document.createElement('span');
-    label.textContent = p.label;
-    row.appendChild(led);
-    row.appendChild(label);
-    row.addEventListener('click', () => {
-      selectProvider(i);
-      autoSwitchNote.style.display = 'none';
-      closeProviderMenu();
+  let providerStatuses = [];
+  let channelListCache = new Map();
+  let channelListPromises = new Map();
+  let lastCheckedChannel = null;
+  let lastCheckResult = null;
+
+  function resetProviderState(providers) {
+    providerStatuses = new Array(providers.length).fill('idle');
+    channelListCache.clear();
+    channelListPromises.clear();
+    lastCheckedChannel = null;
+    lastCheckResult = null;
+  }
+
+  function rebuildProviderOptions(providers) {
+    resetProviderState(providers);
+    providerMenu.innerHTML = '';
+    providerOptionEls = [];
+    providers.forEach((p, i) => {
+      const row = document.createElement('div');
+      row.className = 'provider-option';
+      const led = document.createElement('span');
+      led.className = 'led';
+      const label = document.createElement('span');
+      label.textContent = p.label;
+      row.appendChild(led);
+      row.appendChild(label);
+      row.addEventListener('click', () => {
+        selectProvider(i);
+        autoSwitchNote.style.display = 'none';
+        closeProviderMenu();
+      });
+      providerMenu.appendChild(row);
+      providerOptionEls.push({ rowEl: row, ledEl: led });
     });
-    providerMenu.appendChild(row);
-    return { rowEl: row, ledEl: led };
-  });
+    if (selectedProviderIdx >= providers.length) selectedProviderIdx = 0;
+    selectProvider(selectedProviderIdx);
+  }
 
   function selectProvider(idx) {
+    if (idx >= PROVIDERS.length) idx = 0;
     selectedProviderIdx = idx;
     providerBtnLabel.textContent = PROVIDERS[idx].label;
-    providerBtnLed.className = providerOptionEls[idx].ledEl.className;
+    providerBtnLed.className = providerOptionEls[idx]?.ledEl.className || 'led';
     providerOptionEls.forEach((o, i) => o.rowEl.classList.toggle('selected', i === idx));
   }
+
+  async function fetchProvidersFromInstances() {
+    try {
+      const res = await fetch('https://logs.zonian.dev/instances', { mode: 'cors' });
+      if (!res.ok) throw new Error('Instances fetch failed');
+      const data = await res.json();
+      if (Array.isArray(data) && data.length) {
+        const newProviders = data
+          .filter(item => item.status === 'UP' || item.status === 'up')
+          .map(item => ({
+            host: item.domain || item.host || item.url,
+            label: item.domain || item.host || item.url
+          }))
+          .filter(p => p.host)
+          .sort((a, b) => a.host.localeCompare(b.host));
+
+        if (newProviders.length) {
+          PROVIDERS = newProviders;
+        } else {
+          PROVIDERS = FALLBACK_PROVIDERS.slice();
+        }
+      } else {
+        PROVIDERS = FALLBACK_PROVIDERS.slice();
+      }
+    } catch (e) {
+      console.warn('Failed to fetch provider instances, using fallback list:', e);
+      PROVIDERS = FALLBACK_PROVIDERS.slice();
+    }
+    rebuildProviderOptions(PROVIDERS);
+  }
+
+  // --- Initialize provider list ---
+  rebuildProviderOptions(PROVIDERS);
+  fetchProvidersFromInstances();
+
   function toggleProviderMenu() {
     if (providerBtn.disabled) return;
     providerMenu.classList.toggle('open');
@@ -631,9 +709,7 @@
   providerBtn.addEventListener('click', toggleProviderMenu);
   document.addEventListener('click', e => { if (!providerPicker.contains(e.target)) closeProviderMenu(); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeProviderMenu(); });
-  selectProvider(0);
 
-  // ---- Set default date to today ----
   function setDefaultDates() {
     const now = new Date();
     const year = now.getFullYear();
@@ -658,15 +734,6 @@
   let idxToGroup = [];
   let loading = false;
 
-  let providerStatuses = new Array(PROVIDERS.length).fill('idle');
-  let channelCheckToken = 0;
-  let lastCheckedChannel = null;
-  let lastCheckResult = null;
-  const logCache = new Map();
-  const channelListCache = new Map();
-  const channelListPromises = new Map();
-
-  // Cancellation support
   let cancelRequested = false;
   let activeAbortController = null;
 
@@ -724,7 +791,6 @@
     </div>
   `);
 
-  // ---- view mode switching ----
   function setView(view) {
     currentView = view;
     viewSeg.querySelectorAll('.seg-btn').forEach(b => b.classList.toggle('active', b.dataset.view === view));
@@ -740,7 +806,6 @@
   });
   setView('month');
 
-  // ---- reverse-order toggle ----
   function setReverse(rev) {
     reverseOrder = rev;
     reverseArrow.innerHTML = rev ? '&uarr;' : '&darr;';
@@ -761,9 +826,10 @@
     return 'led on-red';
   }
   function setProviderState(idx, state) {
+    if (idx >= providerStatuses.length) return;
     providerStatuses[idx] = state;
     const cls = ledClassForState(state);
-    providerOptionEls[idx].ledEl.className = cls;
+    if (providerOptionEls[idx]) providerOptionEls[idx].ledEl.className = cls;
     if (idx === selectedProviderIdx) providerBtnLed.className = cls;
   }
 
@@ -789,11 +855,13 @@
   }
 
   async function getProviderChannelList(hostIdx) {
+    if (hostIdx >= PROVIDERS.length) return null;
+    const host = PROVIDERS[hostIdx].host;
     if (channelListCache.has(hostIdx)) return channelListCache.get(hostIdx);
     if (channelListPromises.has(hostIdx)) return channelListPromises.get(hostIdx);
     const p = (async () => {
       try {
-        const res = await fetchWithTimeout(`https://${PROVIDERS[hostIdx].host}/list`, 8000);
+        const res = await fetchWithTimeout(`https://${host}/list`, 8000);
         if (!res.ok) return null;
         const data = await res.json();
         const set = parseChannelList(data);
@@ -828,10 +896,13 @@
   }
 
   async function checkProviderChannel(hostIdx, channel) {
+    if (hostIdx >= PROVIDERS.length) return { status: 'blocked' };
     const list = await getProviderChannelList(hostIdx);
     if (list) return { status: list.has(channel.toLowerCase()) ? 'available' : 'no-logs' };
     return probeChannelFallback(PROVIDERS[hostIdx].host, channel);
   }
+
+  let channelCheckToken = 0;
 
   async function runChannelCheck(channel) {
     const token = ++channelCheckToken;
@@ -889,7 +960,6 @@
     return res;
   }
 
-  // ---- Channel input events with ID detection ----
   let channelDebounceTimer = null;
   channelInput.addEventListener('input', () => {
     clearTimeout(channelDebounceTimer);
@@ -903,7 +973,6 @@
       lastCheckResult = null;
       return;
     }
-    // If it's an ID, skip provider check and clear any error
     if (isIdInput(rawVal)) {
       channelInput.classList.remove('error', 'checking');
       channelError.style.display = 'none';
@@ -935,6 +1004,8 @@
   // =========================================================
   // Fetching + caching with ID support
   // =========================================================
+
+  const logCache = new Map();
 
   function filterLinesByDay(lines, targetYear, targetMonth, targetDay) {
     const dateStr = `${targetYear}-${pad(targetMonth)}-${pad(targetDay)}`;
@@ -1125,7 +1196,7 @@
     return filtered;
   }
 
-  // ---- Render helpers (unchanged) ----
+  // ---- Render helpers ----
   function renderDayBody(container, lines, filterQuery) {
     const pre = document.createElement('pre');
     pre.className = 'log-lines';
