@@ -197,6 +197,24 @@
   button.primary:hover:not(:disabled) { background: #7d38e0; }
   button.primary:disabled { background: var(--accent-dim); }
 
+  /* --- LOADING GLOW (text glow) --- */
+  .primary.loading {
+    background: var(--accent-dim);
+    cursor: default;
+    pointer-events: none;
+    animation: textGlow 1.0s ease-in-out infinite;
+  }
+  @keyframes textGlow {
+    0%, 100% {
+      color: #fff;
+      text-shadow: 0 0 4px rgba(255,255,255,0.05);
+    }
+    50% {
+      color: #d4b5ff;
+      text-shadow: 0 0 16px rgba(145, 70, 255, 0.6);
+    }
+  }
+
   button.secondary { cursor: pointer; color: var(--muted); }
   button.secondary:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
 
@@ -840,6 +858,17 @@
   let pendingFilterQuery = null;
   let currentFilterQuery = ''; // stores last applied filter to avoid re-rendering
 
+  // --- Helper to set loading state on LOAD button ---
+  function setLoadButtonLoading(state) {
+    if (state) {
+      loadBtn.classList.add('loading');
+      loadBtn.disabled = true;
+    } else {
+      loadBtn.classList.remove('loading');
+      loadBtn.disabled = false;
+    }
+  }
+
   function daysInMonth(year, month) { return new Date(year, month, 0).getDate(); }
   function pad(n) { return String(n).padStart(2, '0'); }
   function ordinal(n) {
@@ -878,6 +907,7 @@
     yearInput.disabled = disabled;
     dayInput.disabled = disabled;
     viewSeg.querySelectorAll('.seg-btn').forEach(b => b.disabled = disabled);
+    // LOAD button is handled separately via setLoadButtonLoading
   }
 
   function showEmptyState(html) {
@@ -1408,6 +1438,17 @@
   }
 
   function fillSlotExpanded(slot, result, filterQuery) {
+    if (!result || result.status !== 'ok') {
+      slot.headerRight.className = 'meta';
+      slot.headerRight.textContent = 'loading...';
+      slot.bodyEl.innerHTML = '';
+      const loading = document.createElement('div');
+      loading.className = 'day-empty-note';
+      loading.textContent = 'Loading...';
+      slot.bodyEl.appendChild(loading);
+      return;
+    }
+
     slot.headerRight.className = 'meta ' + (result.status === 'ok' ? 'ok' : result.status === 'empty' ? 'empty' : 'error');
     slot.headerRight.textContent = result.status === 'ok' ? `${result.lines.length} lines`
                                   : result.status === 'empty' ? 'no logs'
@@ -1508,7 +1549,6 @@
 
     const bodyContainer = document.createElement('div');
     bodyContainer.className = 'month-box-body';
-    // If expandByDefault is true, show body immediately, otherwise hidden
     bodyContainer.style.display = expandByDefault ? 'block' : 'none';
     el.appendChild(bodyContainer);
 
@@ -1521,9 +1561,6 @@
       expanded: expandByDefault, 
       builtRows: false 
     };
-
-    // If expanded by default, we need to build the rows after the data is loaded
-    // The header click will toggle expansion
 
     header.addEventListener('click', () => {
       state.expanded = !state.expanded;
@@ -1558,11 +1595,9 @@
     idxToGroup = new Array(dateList.length).fill(-1);
     const q = filterInput.value.trim();
 
-    // Determine flat mode: Day view, or user mode with Month view, or any view with filter active
     const flatMode = currentView === 'day' || (currentUserMode && currentView === 'month') || q;
 
     if (flatMode) {
-      // Flat mode: expand all days and show logs (filtered if q)
       let lastMonthKey = null;
       const order = dateList.map((_, i) => i);
       if (reverseOrder) order.reverse();
@@ -1575,18 +1610,15 @@
         const slot = buildSkeletonBlock(item, false);
         slotEls[i] = slot;
         main.appendChild(slot.el);
-        if (dayResults[i]) fillSlotExpanded(slot, dayResults[i], q);
-        else fillSlotExpanded(slot, { status: 'error', lines: [], message: 'not loaded' }, q);
+        fillSlotExpanded(slot, dayResults[i] || null, q);
       });
       return;
     }
 
-    // Month/Year views with collapsible months
     const groupsRaw = buildMonthGroupsFromList(dateList);
     groupsRaw.forEach((g, gi) => g.indices.forEach(i => idxToGroup[i] = gi));
     monthGroups = new Array(groupsRaw.length);
 
-    // Determine if we should expand by default: only in Month view (currentView === 'month' and no user mode)
     const expandDefault = (currentView === 'month' && !currentUserMode);
 
     const displayOrderGroups = reverseOrder ? groupsRaw.slice().reverse() : groupsRaw;
@@ -1595,12 +1627,7 @@
       const state = buildMonthGroupBox(g, expandDefault);
       monthGroups[gi] = state;
       main.appendChild(state.el);
-      // If expanded by default, we need to build the rows after data is loaded
-      // But the data may already be loaded, so we call rebuildMonthBody
       if (expandDefault && state.expanded) {
-        // But we need to wait until dayResults are populated; we'll call after render
-        // Actually, we'll rebuild after renderMain finishes
-        // We'll store a flag to rebuild after all groups are created
         setTimeout(() => {
           if (state.expanded) {
             rebuildMonthBody(gi);
@@ -1609,9 +1636,7 @@
       }
     });
 
-    // Update headers for any already loaded data
     groupsRaw.forEach((_, gi) => updateGroupHeader(gi));
-    // If expandDefault, also ensure the body is rebuilt after data is loaded (done in setTimeout above)
   }
 
   // ===== OPTIMISED FILTER WITH SAFEGUARD =====
@@ -1621,7 +1646,6 @@
     clearTimeout(filterDebounceTimer);
     filterDebounceTimer = setTimeout(() => {
       const q = filterInput.value.trim();
-      // If overlay is visible and user types again, dismiss it
       if (confirmOverlay.classList.contains('visible')) {
         confirmOverlay.classList.remove('visible');
         pendingFilterQuery = null;
@@ -1636,7 +1660,6 @@
         return;
       }
 
-      // If query is empty, revert to normal view
       if (!q) {
         currentFilterQuery = '';
         renderMain();
@@ -1644,11 +1667,10 @@
         return;
       }
 
-      // Count matching lines once
       let loadedDays = 0;
       let matchCount = 0;
       const queryLower = q.toLowerCase();
-      const results = dayResults; // local reference for speed
+      const results = dayResults;
       for (let i = 0; i < results.length; i++) {
         const r = results[i];
         if (r && r.status === 'ok' && r.lines && r.lines.length) {
@@ -1668,7 +1690,6 @@
         return;
       }
 
-      // Check threshold: 75,000 lines
       if (matchCount > 75000) {
         matchCountSpan.textContent = matchCount.toLocaleString();
         pendingFilterQuery = q;
@@ -1676,19 +1697,16 @@
         return;
       }
 
-      // Apply filter immediately – pass the count to avoid recounting
       applyFilter(q, matchCount);
     }, 300);
   });
 
   function applyFilter(query, matchCount) {
-    // Only re-render if the query changed
     if (currentFilterQuery !== query) {
       currentFilterQuery = query;
       renderMain();
     }
     const loadedDays = dayResults.filter(r => r && r.status === 'ok').length;
-    // If matchCount wasn't provided, count it (fallback)
     if (matchCount === undefined) {
       matchCount = 0;
       const q = query.toLowerCase();
@@ -1716,7 +1734,6 @@
   confirmCancelBtn.addEventListener('click', () => {
     confirmOverlay.classList.remove('visible');
     pendingFilterQuery = null;
-    // Clear filter input and re-render without filter
     filterInput.value = '';
     currentFilterQuery = '';
     renderMain();
@@ -1724,7 +1741,6 @@
     setFooterDone('Filter cancelled.');
   });
 
-  // Close overlay on backdrop click
   confirmOverlay.addEventListener('click', (e) => {
     if (e.target === confirmOverlay) {
       confirmCancelBtn.click();
@@ -1753,6 +1769,7 @@
     }
     cancelBtn.disabled = true;
     cancelBtn.textContent = 'Cancelling...';
+    setLoadButtonLoading(false);
   }
 
   cancelBtn.addEventListener('click', cancelSearch);
@@ -1790,6 +1807,7 @@
     const userMode = !!username;
 
     loadBtn.disabled = true;
+    setLoadButtonLoading(true);
 
     if (isId) {
       // skip instance check
@@ -1797,6 +1815,7 @@
       const check = await ensureChecked(channel);
       if (!check || !check.ok) {
         loadBtn.disabled = false;
+        setLoadButtonLoading(false);
         showEmptyState(`<div>Fix the channel name above before loading. See the error under the field.</div>`);
         setFooterDone('Channel not found in any instance.');
         return;
@@ -1814,6 +1833,7 @@
 
     if (availableProviders.length === 0) {
       loadBtn.disabled = false;
+      setLoadButtonLoading(false);
       showEmptyState(`<div>No instances available for this channel. Check the channel name.</div>`);
       setFooterDone('No instances found.');
       return;
@@ -1906,6 +1926,7 @@
         if (invalid || isFuture || list.length === 0) {
           if (invalid) {
             loadBtn.disabled = false;
+            setLoadButtonLoading(false);
             showEmptyState(`<div>Pick a valid date first.</div>`);
             setFooterDone('No date selected.');
             activeAbortController = null;
@@ -2025,6 +2046,7 @@
         autoSwitchNote.textContent = `Using ${provider.label} (found logs)`;
         autoSwitchNote.style.display = 'block';
         loadBtn.disabled = false;
+        setLoadButtonLoading(false);
         renderMain();
         loading = false;
         setControlsDisabled(false);
@@ -2045,6 +2067,7 @@
     statusBar.classList.remove('visible');
     cancelBtn.style.display = 'none';
     activeAbortController = null;
+    setLoadButtonLoading(false);
 
     if (cancelRequested) {
       showEmptyState(`<div>Search cancelled.</div>`);
@@ -2084,7 +2107,7 @@
     slotEls = [];
     monthGroups = [];
     idxToGroup = [];
-    logCache.clear(); // also clear cache on reset
+    logCache.clear();
     main.innerHTML = '';
     showEmptyState(welcomeText);
     setFooterDone('No logs loaded yet.');
@@ -2116,6 +2139,7 @@
     loading = false;
     setControlsDisabled(false);
     loadBtn.disabled = false;
+    setLoadButtonLoading(false);
     statusBar.classList.remove('visible');
   });
 
