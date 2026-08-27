@@ -560,17 +560,17 @@
     </div>
 
     <div class="field" id="dayField">
-      <label for="day">Date (UTC)</label>
+      <label for="day">Date</label>
       <input id="day" type="date">
     </div>
 
     <div class="field" id="monthField">
-      <label for="month">Month (UTC)</label>
+      <label for="month">Month</label>
       <select id="month"></select>
     </div>
 
     <div class="field" id="yearField">
-      <label for="year">Year (UTC)</label>
+      <label for="year">Year</label>
       <input id="year" type="number" min="2015" max="2100">
     </div>
 
@@ -2058,11 +2058,11 @@
 
       try {
         const CONCURRENCY = 8;
-        const queue = list.map((_, i) => i);
+        let nextIdx = 0;
 
         async function worker() {
-          while (queue.length && !cancelRequested) {
-            const idx = queue.shift();
+          while (nextIdx < list.length && !cancelRequested) {
+            const idx = nextIdx++;
             const item = list[idx];
             let result;
             try {
@@ -2289,7 +2289,7 @@
       const list = Array.from({ length: total }, (_, i) => ({ year, month, day: i + 1 }));
       const label = `${MONTHS[month-1]} ${year}`;
       const inProgressNote = (isCurrentMonth && total < fullDays)
-        ? ` (${label} is still in progress, UTC time: showing through the ${total}${ordinal(total)}. Reload later for more.)`
+        ? ` (${label} is still in progress: showing through the ${total}${ordinal(total)}. Reload later for more.)`
         : '';
       return { list, isFuture, label, inProgressNote };
     }
@@ -2309,7 +2309,7 @@
     const label = `${year}`;
     const fullDaysInYear = (new Date(year, 11, 31) - new Date(year, 0, 1)) / 86400000 + 1;
     const inProgressNote = (isCurrentYear && list.length < fullDaysInYear)
-      ? ` (${year} is still in progress, UTC time: showing through today. Reload later for more.)`
+      ? ` (${year} is still in progress: showing through today. Reload later for more.)`
       : '';
     return { list, isFuture: isFutureYear, label, inProgressNote };
   }
@@ -2348,7 +2348,7 @@
     }
     const label = `${year}`;
     const inProgressNote = (isCurrentYear && list.length < 12)
-      ? ` (${year} is still in progress, UTC time: showing through the current month. Reload later for more.)`
+      ? ` (${year} is still in progress: showing through the current month. Reload later for more.)`
       : '';
     return { list, isFuture: isFutureYear, label, inProgressNote };
   }
