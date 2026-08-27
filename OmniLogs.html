@@ -560,17 +560,17 @@
     </div>
 
     <div class="field" id="dayField">
-      <label for="day">Date</label>
+      <label for="day">Date (UTC)</label>
       <input id="day" type="date">
     </div>
 
     <div class="field" id="monthField">
-      <label for="month">Month</label>
+      <label for="month">Month (UTC)</label>
       <select id="month"></select>
     </div>
 
     <div class="field" id="yearField">
-      <label for="year">Year</label>
+      <label for="year">Year (UTC)</label>
       <input id="year" type="number" min="2015" max="2100">
     </div>
 
@@ -709,7 +709,7 @@
   const confirmCancelBtn = document.getElementById('confirmCancel');
 
   if (currentYearSpan) {
-    currentYearSpan.textContent = new Date().getFullYear();
+    currentYearSpan.textContent = new Date().getUTCFullYear();
   }
 
   const MONTHS = ["January","February","March","April","May","June",
@@ -818,10 +818,7 @@
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeProviderMenu(); });
 
   function setDefaultDates() {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth() + 1;
-    const day = now.getDate();
+    const { year, month, day } = getUTCToday();
     dayInput.value = `${year}-${pad(month)}-${pad(day)}`;
     monthSelect.value = month;
     yearInput.value = year;
@@ -859,6 +856,19 @@
 
   function daysInMonth(year, month) { return new Date(year, month, 0).getDate(); }
   function pad(n) { return String(n).padStart(2, '0'); }
+
+  // The log providers (justlog instances) bucket messages by UTC calendar day,
+  // not by the visitor's local day. Every "what is today" check in this app
+  // must use UTC, or the day/month/year boundaries drift against the
+  // provider's boundaries and totals stop matching what the provider itself
+  // reports for the same period.
+  function getUTCToday() {
+    const now = new Date();
+    return { year: now.getUTCFullYear(), month: now.getUTCMonth() + 1, day: now.getUTCDate() };
+  }
+  function utcMidnight(year, month, day) {
+    return new Date(Date.UTC(year, month - 1, day));
+  }
   function ordinal(n) {
     const s = ['th', 'st', 'nd', 'rd'];
     const v = n % 100;
@@ -1021,8 +1031,8 @@
       if (res.ok) return { status: 'available' };
     } catch (_) { /* fall through */ }
     try {
-      const today = new Date();
-      const url = `https://${host}/channel/${encodeURIComponent(channel)}/${today.getFullYear()}/${today.getMonth() + 1}/${today.getDate()}`;
+      const today = getUTCToday();
+      const url = `https://${host}/channel/${encodeURIComponent(channel)}/${today.year}/${today.month}/${today.day}`;
       const res = await fetchWithTimeout(url, 7000);
       if (res.status === 404) return { status: 'no-logs' };
       if (res.ok) return { status: 'available' };
@@ -1315,10 +1325,10 @@
   }
 
   function filterIndexByPeriod(index, view, year, month, day) {
-    const today = new Date();
-    const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const t = getUTCToday();
+    const todayMidnight = utcMidnight(t.year, t.month, t.day);
     let filtered = index.filter(d => {
-      const dt = new Date(d.year, d.month - 1, d.day);
+      const dt = utcMidnight(d.year, d.month, d.day);
       if (dt > todayMidnight) return false;
       if (view === 'day') {
         return d.year === year && d.month === month && d.day === day;
@@ -2252,14 +2262,14 @@
 
   // ---- Fallback date lists ----
   function buildDateList(view) {
-    const today = new Date();
-    const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const today = getUTCToday();
+    const todayMidnight = utcMidnight(today.year, today.month, today.day);
 
     if (view === 'day') {
       const raw = dayInput.value;
       if (!raw) return { list: [], isFuture: false, label: '', invalid: true };
       const [y, m, d] = raw.split('-').map(n => parseInt(n, 10));
-      const target = new Date(y, m - 1, d);
+      const target = utcMidnight(y, m, d);
       const isFuture = target > todayMidnight;
       const label = `${MONTHS[m-1]} ${d}, ${y}`;
       return { list: isFuture ? [] : [{ year: y, month: m, day: d }], isFuture, label };
@@ -2269,50 +2279,50 @@
       const year = parseInt(yearInput.value, 10);
       const month = parseInt(monthSelect.value, 10);
       const fullDays = daysInMonth(year, month);
-      const selectedMonthStart = new Date(year, month - 1, 1);
-      const isCurrentMonth = year === today.getFullYear() && month === today.getMonth() + 1;
+      const selectedMonthStart = utcMidnight(year, month, 1);
+      const isCurrentMonth = year === today.year && month === today.month;
       const isFuture = selectedMonthStart > todayMidnight && !isCurrentMonth;
       let total;
       if (isFuture) total = 0;
-      else if (isCurrentMonth) total = today.getDate();
+      else if (isCurrentMonth) total = today.day;
       else total = fullDays;
       const list = Array.from({ length: total }, (_, i) => ({ year, month, day: i + 1 }));
       const label = `${MONTHS[month-1]} ${year}`;
       const inProgressNote = (isCurrentMonth && total < fullDays)
-        ? ` (${label} is still in progress: showing through the ${total}${ordinal(total)}. Reload later for more.)`
+        ? ` (${label} is still in progress, UTC time: showing through the ${total}${ordinal(total)}. Reload later for more.)`
         : '';
       return { list, isFuture, label, inProgressNote };
     }
 
     const year = parseInt(yearInput.value, 10);
-    const isFutureYear = year > today.getFullYear();
-    const isCurrentYear = year === today.getFullYear();
+    const isFutureYear = year > today.year;
+    const isCurrentYear = year === today.year;
     let list = [];
     if (!isFutureYear) {
       for (let m = 1; m <= 12; m++) {
-        if (isCurrentYear && m > today.getMonth() + 1) break;
+        if (isCurrentYear && m > today.month) break;
         const dim = daysInMonth(year, m);
-        const limit = (isCurrentYear && m === today.getMonth() + 1) ? today.getDate() : dim;
+        const limit = (isCurrentYear && m === today.month) ? today.day : dim;
         for (let d = 1; d <= limit; d++) list.push({ year, month: m, day: d });
       }
     }
     const label = `${year}`;
     const fullDaysInYear = (new Date(year, 11, 31) - new Date(year, 0, 1)) / 86400000 + 1;
     const inProgressNote = (isCurrentYear && list.length < fullDaysInYear)
-      ? ` (${year} is still in progress: showing through today. Reload later for more.)`
+      ? ` (${year} is still in progress, UTC time: showing through today. Reload later for more.)`
       : '';
     return { list, isFuture: isFutureYear, label, inProgressNote };
   }
 
   function buildDateListUserMode(view) {
-    const today = new Date();
-    const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const today = getUTCToday();
+    const todayMidnight = utcMidnight(today.year, today.month, today.day);
 
     if (view === 'day') {
       const raw = dayInput.value;
       if (!raw) return { list: [], isFuture: false, label: '', invalid: true };
       const [y, m, d] = raw.split('-').map(n => parseInt(n, 10));
-      const target = new Date(y, m - 1, d);
+      const target = utcMidnight(y, m, d);
       const isFuture = target > todayMidnight;
       const label = `${MONTHS[m-1]} ${d}, ${y}`;
       return { list: isFuture ? [] : [{ year: y, month: m, day: d }], isFuture, label };
@@ -2321,24 +2331,24 @@
     if (view === 'month') {
       const year = parseInt(yearInput.value, 10);
       const month = parseInt(monthSelect.value, 10);
-      const monthStart = new Date(year, month - 1, 1);
-      const isCurrentMonth = year === today.getFullYear() && month === today.getMonth() + 1;
+      const monthStart = utcMidnight(year, month, 1);
+      const isCurrentMonth = year === today.year && month === today.month;
       const isFuture = monthStart > todayMidnight && !isCurrentMonth;
       const label = `${MONTHS[month-1]} ${year}`;
       return { list: isFuture ? [] : [{ year, month, day: null }], isFuture, label };
     }
 
     const year = parseInt(yearInput.value, 10);
-    const isFutureYear = year > today.getFullYear();
-    const isCurrentYear = year === today.getFullYear();
+    const isFutureYear = year > today.year;
+    const isCurrentYear = year === today.year;
     let list = [];
     if (!isFutureYear) {
-      const lastMonth = isCurrentYear ? today.getMonth() + 1 : 12;
+      const lastMonth = isCurrentYear ? today.month : 12;
       for (let m = 1; m <= lastMonth; m++) list.push({ year, month: m, day: null });
     }
     const label = `${year}`;
     const inProgressNote = (isCurrentYear && list.length < 12)
-      ? ` (${year} is still in progress: showing through the current month. Reload later for more.)`
+      ? ` (${year} is still in progress, UTC time: showing through the current month. Reload later for more.)`
       : '';
     return { list, isFuture: isFutureYear, label, inProgressNote };
   }
