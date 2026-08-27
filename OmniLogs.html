@@ -197,7 +197,6 @@
   button.primary:hover:not(:disabled) { background: #7d38e0; }
   button.primary:disabled { background: var(--accent-dim); }
 
-  /* --- LOADING GLOW (text glow) --- */
   .primary.loading {
     background: var(--accent-dim);
     cursor: default;
@@ -205,14 +204,8 @@
     animation: textGlow 1.0s ease-in-out infinite;
   }
   @keyframes textGlow {
-    0%, 100% {
-      color: #fff;
-      text-shadow: 0 0 4px rgba(255,255,255,0.05);
-    }
-    50% {
-      color: #d4b5ff;
-      text-shadow: 0 0 16px rgba(145, 70, 255, 0.6);
-    }
+    0%, 100% { color: #fff; text-shadow: 0 0 4px rgba(255,255,255,0.05); }
+    50% { color: #d4b5ff; text-shadow: 0 0 16px rgba(145, 70, 255, 0.6); }
   }
 
   button.secondary { cursor: pointer; color: var(--muted); }
@@ -710,13 +703,11 @@
   const cancelBtn = document.getElementById('cancelBtn');
   const currentYearSpan = document.getElementById('current-year');
 
-  // Confirmation overlay elements
   const confirmOverlay = document.getElementById('confirmOverlay');
   const matchCountSpan = document.getElementById('matchCount');
   const confirmOkBtn = document.getElementById('confirmOk');
   const confirmCancelBtn = document.getElementById('confirmCancel');
 
-  // Update disclaimer year
   if (currentYearSpan) {
     currentYearSpan.textContent = new Date().getFullYear();
   }
@@ -810,7 +801,6 @@
     rebuildProviderOptions(PROVIDERS);
   }
 
-  // --- Initialize instance list ---
   rebuildProviderOptions(PROVIDERS);
   fetchProvidersFromInstances();
 
@@ -854,11 +844,9 @@
   let cancelRequested = false;
   let activeAbortController = null;
 
-  // Variables for filter
   let pendingFilterQuery = null;
-  let currentFilterQuery = ''; // stores last applied filter to avoid re-rendering
+  let currentFilterQuery = '';
 
-  // --- Helper to set loading state on LOAD button ---
   function setLoadButtonLoading(state) {
     if (state) {
       loadBtn.classList.add('loading');
@@ -907,14 +895,12 @@
     yearInput.disabled = disabled;
     dayInput.disabled = disabled;
     viewSeg.querySelectorAll('.seg-btn').forEach(b => b.disabled = disabled);
-    // LOAD button is handled separately via setLoadButtonLoading
   }
 
   function showEmptyState(html) {
     main.innerHTML = `<div class="empty-state">${html}</div>`;
   }
 
-  // --- Final welcome text (numbered steps) ---
   const welcomeText = `
     <div style="max-width: 460px; margin: 0 auto; text-align: left;">
       <div style="font-size: 16px; font-weight: 500; color: var(--accent); margin-bottom: 14px;">
@@ -1156,7 +1142,7 @@
   // Fetching + caching with ID support
   // =========================================================
 
-  let logCache = new Map(); // global cache
+  let logCache = new Map();
 
   function filterLinesByDay(lines, targetYear, targetMonth, targetDay) {
     const dateStr = `${targetYear}-${pad(targetMonth)}-${pad(targetDay)}`;
@@ -1351,13 +1337,17 @@
   function renderDayBody(container, lines, filterQuery) {
     const pre = document.createElement('pre');
     pre.className = 'log-lines';
+    let linesToRender = lines;
+    if (reverseOrder) {
+      linesToRender = lines.slice().reverse();
+    }
     if (!filterQuery) {
-      pre.textContent = lines.join('\n');
+      pre.textContent = linesToRender.join('\n');
       container.appendChild(pre);
-      return lines.length;
+      return linesToRender.length;
     }
     const q = filterQuery.toLowerCase();
-    const matched = lines.filter(l => l.toLowerCase().includes(q));
+    const matched = linesToRender.filter(l => l.toLowerCase().includes(q));
     if (matched.length) {
       const escQ = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const re = new RegExp(`(${escQ})`, 'ig');
@@ -1493,7 +1483,6 @@
     return groups;
   }
 
-  // ---- Build day rows (only for days with logs) ----
   function buildDayRowsInto(container, indices) {
     const okIndices = indices.filter(i => dayResults[i] && dayResults[i].status === 'ok');
     const order = reverseOrder ? okIndices.slice().reverse() : okIndices;
@@ -1506,22 +1495,40 @@
     });
   }
 
-  // ---- Rebuild a month's body when new data arrives ----
   function rebuildMonthBody(gi) {
     const group = monthGroups[gi];
     if (!group || !group.expanded) return;
     const container = group.bodyContainer;
     container.innerHTML = '';
-    const hasLogs = group.indices.some(i => dayResults[i] && dayResults[i].status === 'ok');
+    const indices = group.indices;
+
+    const isUserYear = currentUserMode && currentView === 'year' && indices.length === 1 && dateList[indices[0]] && dateList[indices[0]].day === null;
+
+    if (isUserYear) {
+      const idx = indices[0];
+      const result = dayResults[idx];
+      if (result && result.status === 'ok' && result.lines && result.lines.length) {
+        renderDayBody(container, result.lines, '');
+        group.headerRight.textContent = `${result.lines.length} lines`;
+      } else if (result && result.status === 'empty') {
+        container.innerHTML = `<div class="day-empty-note">No logs recorded for this period.</div>`;
+        group.headerRight.textContent = '0 lines';
+      } else {
+        container.innerHTML = `<div class="day-error-note">Could not load logs.</div>`;
+        group.headerRight.textContent = 'error';
+      }
+      return;
+    }
+
+    const hasLogs = indices.some(i => dayResults[i] && dayResults[i].status === 'ok');
     if (!hasLogs) {
       container.innerHTML = `<div class="day-empty-note" style="padding: 10px 20px;">No logs this month</div>`;
     } else {
-      buildDayRowsInto(container, group.indices);
+      buildDayRowsInto(container, indices);
     }
     updateGroupHeader(gi);
   }
 
-  // ---- Build month box ----
   function buildMonthGroupBox(g, expandByDefault = false) {
     const el = document.createElement('div');
     el.className = 'month-box';
@@ -1577,15 +1584,29 @@
   function updateGroupHeader(gi) {
     const group = monthGroups[gi];
     if (!group) return;
+    const indices = group.indices;
+
+    const isUserYear = currentUserMode && currentView === 'year' && indices.length === 1 && dateList[indices[0]] && dateList[indices[0]].day === null;
+    if (isUserYear) {
+      const idx = indices[0];
+      const r = dayResults[idx];
+      if (r) {
+        group.headerRight.textContent = r.status === 'ok' ? `${r.lines.length} lines` : r.status === 'empty' ? '0 lines' : 'error';
+      } else {
+        group.headerRight.textContent = 'loading...';
+      }
+      return;
+    }
+
     let doneCount = 0, okCount = 0, lineTotal = 0;
-    group.indices.forEach(i => {
+    indices.forEach(i => {
       const r = dayResults[i];
       if (r) { doneCount++; if (r.status === 'ok') { okCount++; lineTotal += r.lines.length; } }
     });
-    const allDone = doneCount === group.indices.length;
+    const allDone = doneCount === indices.length;
     group.headerRight.textContent = allDone
-      ? `${okCount}/${group.indices.length} days, ${lineTotal} lines`
-      : `loading... ${doneCount}/${group.indices.length}`;
+      ? `${okCount}/${indices.length} days, ${lineTotal} lines`
+      : `loading... ${doneCount}/${indices.length}`;
   }
 
   function renderMain() {
@@ -1595,35 +1616,97 @@
     idxToGroup = new Array(dateList.length).fill(-1);
     const q = filterInput.value.trim();
 
+    // Flat mode: Day view, Month view with user, or any filter
     const flatMode = currentView === 'day' || (currentUserMode && currentView === 'month') || q;
 
+    // --- Flat mode (expanded days) ---
     if (flatMode) {
-      let lastMonthKey = null;
-      const order = dateList.map((_, i) => i);
-      if (reverseOrder) order.reverse();
-      order.forEach(i => {
-        const item = dateList[i];
-        if (currentView === 'year' && q && !currentUserMode) {
-          const key = `${item.year}-${item.month}`;
-          if (key !== lastMonthKey) { main.appendChild(buildMonthDividerStatic(item.year, item.month)); lastMonthKey = key; }
+      let indicesToRender = [];
+      if (q) {
+        const queryLower = q.toLowerCase();
+        indicesToRender = dateList.map((_, i) => i).filter(i => {
+          const r = dayResults[i];
+          if (!r || r.status !== 'ok') return false;
+          return r.lines.some(line => line.toLowerCase().includes(queryLower));
+        });
+        if (indicesToRender.length === 0) {
+          main.innerHTML = `<div class="empty-state">No logs match your filter.</div>`;
+          setFooterDone('No logs match your filter.');
+          return;
         }
-        const slot = buildSkeletonBlock(item, false);
-        slotEls[i] = slot;
-        main.appendChild(slot.el);
-        fillSlotExpanded(slot, dayResults[i] || null, q);
-      });
+      } else {
+        indicesToRender = dateList.map((_, i) => i);
+      }
+
+      if (reverseOrder) indicesToRender.reverse();
+
+      if (currentView === 'year' && !currentUserMode && q) {
+        const monthMap = new Map();
+        for (const i of indicesToRender) {
+          const item = dateList[i];
+          const key = `${item.year}-${item.month}`;
+          if (!monthMap.has(key)) {
+            monthMap.set(key, { year: item.year, month: item.month, indices: [] });
+          }
+          monthMap.get(key).indices.push(i);
+        }
+        const sortedMonths = Array.from(monthMap.values()).sort((a, b) => {
+          if (a.year !== b.year) return a.year - b.year;
+          return a.month - b.month;
+        });
+        if (reverseOrder) sortedMonths.reverse();
+
+        for (const month of sortedMonths) {
+          main.appendChild(buildMonthDividerStatic(month.year, month.month));
+          for (const i of month.indices) {
+            const slot = buildSkeletonBlock(dateList[i], false);
+            slotEls[i] = slot;
+            main.appendChild(slot.el);
+            fillSlotExpanded(slot, dayResults[i] || null, q);
+          }
+        }
+      } else {
+        for (const i of indicesToRender) {
+          const slot = buildSkeletonBlock(dateList[i], false);
+          slotEls[i] = slot;
+          main.appendChild(slot.el);
+          fillSlotExpanded(slot, dayResults[i] || null, q);
+        }
+      }
       return;
     }
 
+    // --- Non-flat mode (collapsible month boxes) ---
     const groupsRaw = buildMonthGroupsFromList(dateList);
-    groupsRaw.forEach((g, gi) => g.indices.forEach(i => idxToGroup[i] = gi));
-    monthGroups = new Array(groupsRaw.length);
+
+    let groupsToShow = groupsRaw;
+    if (currentView === 'year' && !currentUserMode) {
+      const allLoaded = dayResults.every(r => r !== null);
+      if (allLoaded) {
+        groupsToShow = groupsRaw.filter(g => {
+          return g.indices.some(i => {
+            const r = dayResults[i];
+            return r && r.status === 'ok' && r.lines && r.lines.length > 0;
+          });
+        });
+        if (groupsToShow.length === 0 && groupsRaw.length > 0) {
+          main.innerHTML = `<div class="empty-state">No logs found for this year.</div>`;
+          setFooterDone('No logs found for this year.');
+          return;
+        }
+      } else {
+        groupsToShow = groupsRaw;
+      }
+    }
+
+    groupsToShow.forEach((g, gi) => g.indices.forEach(i => idxToGroup[i] = gi));
+    monthGroups = new Array(groupsToShow.length);
 
     const expandDefault = (currentView === 'month' && !currentUserMode);
 
-    const displayOrderGroups = reverseOrder ? groupsRaw.slice().reverse() : groupsRaw;
+    const displayOrderGroups = reverseOrder ? groupsToShow.slice().reverse() : groupsToShow;
     displayOrderGroups.forEach(g => {
-      const gi = groupsRaw.indexOf(g);
+      const gi = groupsToShow.indexOf(g);
       const state = buildMonthGroupBox(g, expandDefault);
       monthGroups[gi] = state;
       main.appendChild(state.el);
@@ -1636,7 +1719,7 @@
       }
     });
 
-    groupsRaw.forEach((_, gi) => updateGroupHeader(gi));
+    groupsToShow.forEach((_, gi) => updateGroupHeader(gi));
   }
 
   // ===== OPTIMISED FILTER WITH SAFEGUARD =====
@@ -1747,7 +1830,6 @@
     }
   });
 
-  // ---- Helper to update footer after render ----
   function updateFooterAfterRender() {
     if (!dateList.length) {
       setFooterDone('No logs loaded yet.');
@@ -1759,7 +1841,6 @@
     setFooterDone(`${currentChannel}: ${loaded}/${totalDays} days loaded, ${totalLines} lines.`);
   }
 
-  // ---- Cancel handler for loading ----
   function cancelSearch() {
     if (!loading) return;
     cancelRequested = true;
@@ -1775,13 +1856,10 @@
   cancelBtn.addEventListener('click', cancelSearch);
 
   // =========================================================
-  // Main LOAD function with instance fallback and ID support
+  // Main LOAD function
   // =========================================================
   async function loadRange() {
-    // Clear the log cache on new search
     logCache.clear();
-
-    // Clear any pending filter
     filterInput.value = '';
     pendingFilterQuery = null;
     currentFilterQuery = '';
@@ -1878,7 +1956,6 @@
       let list, isFuture, label, inProgressNote, invalid;
       let useIndex = false;
 
-      // Skip index fetch for Day view – just use fallback list
       if (!isId && !userMode && currentView !== 'day') {
         const index = await getChannelIndex(host, urlChannel, activeAbortController ? activeAbortController.signal : undefined);
         if (cancelRequested) break;
@@ -2097,7 +2174,6 @@
     loadBtn.disabled = false;
   }
 
-  // ---- Brand wrap (reset) ----
   brandWrap.addEventListener('click', () => {
     if (loading) {
       cancelSearch();
@@ -2143,12 +2219,10 @@
     statusBar.classList.remove('visible');
   });
 
-  // ---- Event listeners for LOAD ----
   loadBtn.addEventListener('click', loadRange);
   channelInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadRange(); });
   usernameInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadRange(); });
 
-  // Helper functions for footer (already defined)
   function setFooterLoading(completed, total, ok) {
     summaryPulse.style.display = 'inline-block';
     summaryText.textContent = `Loading ${currentChannel}... ${completed}/${total} fetched (${ok} with logs so far)`;
@@ -2176,7 +2250,7 @@
     }
   }
 
-  // ---- Fallback date lists (used when index not available) ----
+  // ---- Fallback date lists ----
   function buildDateList(view) {
     const today = new Date();
     const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
