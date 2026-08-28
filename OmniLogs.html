@@ -6,6 +6,21 @@
 <title>OmniLogs</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="dns-prefetch" href="https://logs.zonian.dev">
+<link rel="dns-prefetch" href="https://logs.potat.app">
+<link rel="dns-prefetch" href="https://logs.spanix.team">
+<link rel="dns-prefetch" href="https://logs.nadeko.net">
+<link rel="dns-prefetch" href="https://logs.ivr.fi">
+<link rel="dns-prefetch" href="https://harambelogs.pl">
+<link rel="dns-prefetch" href="https://logs.magichack.xyz">
+<link rel="dns-prefetch" href="https://logs.susgee.dev">
+<link rel="dns-prefetch" href="https://logs.mejkiz.com">
+<link rel="dns-prefetch" href="https://logs.fais.al">
+<link rel="dns-prefetch" href="https://logs.folhinhabot.com">
+<link rel="dns-prefetch" href="https://logxx.dev">
+<link rel="dns-prefetch" href="https://logs.mrchuw.com.br">
+<link rel="dns-prefetch" href="https://logs.twitchmetrics.xyz">
+<link rel="dns-prefetch" href="https://logs.jimmyboy.dev">
 <link href="https://fonts.googleapis.com/css2?family=Inter:opsz@14..32&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -1044,9 +1059,18 @@
 
   async function checkProviderChannel(hostIdx, channel) {
     if (hostIdx >= PROVIDERS.length) return { status: 'blocked' };
+    const host = PROVIDERS[hostIdx].host;
+
+    // A single tiny request that answers "does this channel have logs here?"
+    // is far cheaper than downloading the provider's full channel list, which
+    // can run into the thousands of entries. Try that first; only fall back
+    // to the full list if the quick probe couldn't get a clear answer.
+    const probe = await probeChannelFallback(host, channel);
+    if (probe.status !== 'blocked') return probe;
+
     const list = await getProviderChannelList(hostIdx);
     if (list) return { status: list.has(channel.toLowerCase()) ? 'available' : 'no-logs' };
-    return probeChannelFallback(PROVIDERS[hostIdx].host, channel);
+    return probe;
   }
 
   let channelCheckToken = 0;
@@ -1058,45 +1082,56 @@
     channelError.style.display = 'none';
     PROVIDERS.forEach((_, i) => setProviderState(i, 'checking'));
 
-    const checks = PROVIDERS.map((p, i) =>
-      checkProviderChannel(i, channel)
-        .then(r => {
-          if (token === channelCheckToken) setProviderState(i, r.status === 'available' ? 'available' : r.status === 'no-logs' ? 'nologs' : 'blocked');
-          return r;
-        })
-        .catch(() => { if (token === channelCheckToken) setProviderState(i, 'blocked'); return { status: 'blocked' }; })
-    );
-
-    const results = await Promise.all(checks);
-    if (token === channelCheckToken) {
-      PROVIDERS.forEach((_, i) => {
-        if (providerStatuses[i] === 'checking') setProviderState(i, 'blocked');
-      });
-    }
-
-    if (token !== channelCheckToken) return null;
-
-    channelInput.classList.remove('checking');
-    const availableIdx = [];
-    results.forEach((r, i) => { if (r.status === 'available') availableIdx.push(i); });
-
-    if (availableIdx.length === 0) {
+    const total = PROVIDERS.length;
+    if (total === 0) {
+      channelInput.classList.remove('checking');
       channelInput.classList.add('error');
       channelError.textContent = 'Channel not found in any log instance. Check the spelling, or it may not be logged anywhere.';
       channelError.style.display = 'block';
       return { ok: false };
     }
 
-    channelError.style.display = 'none';
-    const bestIdx = availableIdx[0];
-    if (!availableIdx.includes(selectedProviderIdx)) {
-      selectProvider(bestIdx);
-      autoSwitchNote.textContent = `Auto-selected ${PROVIDERS[bestIdx].label}: best available instance for this channel.`;
-      autoSwitchNote.style.display = 'block';
-    } else {
-      autoSwitchNote.style.display = 'none';
-    }
-    return { ok: true, bestIdx };
+    return new Promise((resolve) => {
+      let settledCount = 0;
+      let decided = false;
+
+      PROVIDERS.forEach((p, i) => {
+        checkProviderChannel(i, channel)
+          .catch(() => ({ status: 'blocked' }))
+          .then(r => {
+            if (token !== channelCheckToken) {
+              if (!decided) { decided = true; resolve(null); }
+              return;
+            }
+            setProviderState(i, r.status === 'available' ? 'available' : r.status === 'no-logs' ? 'nologs' : 'blocked');
+            settledCount++;
+
+            if (!decided && r.status === 'available') {
+              // Found a working instance. No need to keep waiting on the rest,
+              // they'll still fill in their own status dot as they respond,
+              // but they no longer hold up the search.
+              decided = true;
+              channelInput.classList.remove('checking');
+              channelError.style.display = 'none';
+              if (i !== selectedProviderIdx) {
+                selectProvider(i);
+                autoSwitchNote.textContent = `Auto-selected ${PROVIDERS[i].label}: best available instance for this channel.`;
+                autoSwitchNote.style.display = 'block';
+              } else {
+                autoSwitchNote.style.display = 'none';
+              }
+              resolve({ ok: true, bestIdx: i });
+            } else if (!decided && settledCount === total) {
+              decided = true;
+              channelInput.classList.remove('checking');
+              channelInput.classList.add('error');
+              channelError.textContent = 'Channel not found in any log instance. Check the spelling, or it may not be logged anywhere.';
+              channelError.style.display = 'block';
+              resolve({ ok: false });
+            }
+          });
+      });
+    });
   }
 
   async function ensureChecked(channel) {
