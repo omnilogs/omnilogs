@@ -852,6 +852,7 @@
   let monthGroups = [];
   let idxToGroup = [];
   let loading = false;
+  let loadToken = 0;
 
   let cancelRequested = false;
   let activeAbortController = null;
@@ -1959,6 +1960,15 @@
       return;
     }
 
+    // Starting a new search supersedes whatever is still running. Stop its
+    // network requests and mark it stale, so a response that arrives late
+    // from the old search can never be written into (or shown as part of)
+    // this new search's results.
+    if (loading && activeAbortController) {
+      activeAbortController.abort();
+    }
+    const myLoadToken = ++loadToken;
+
     loading = true;
     cancelRequested = false;
     activeAbortController = new AbortController();
@@ -1988,6 +1998,7 @@
     const urlChannel = isId ? rawChannel : channel;
 
     for (const providerIdx of orderedProviders) {
+      if (myLoadToken !== loadToken) return;
       if (cancelRequested) break;
 
       const provider = PROVIDERS[providerIdx];
@@ -2000,6 +2011,7 @@
 
       if (!isId && !userMode && currentView !== 'day') {
         const index = await getChannelIndex(host, urlChannel, activeAbortController ? activeAbortController.signal : undefined);
+        if (myLoadToken !== loadToken) return;
         if (cancelRequested) break;
         if (index && !cancelRequested) {
           let year, month, day;
@@ -2068,6 +2080,8 @@
         autoSwitchNote.style.display = 'block';
       }
 
+      if (myLoadToken !== loadToken) return;
+
       currentChannel = urlChannel;
       currentUsername = username;
       currentUserMode = userMode;
@@ -2120,6 +2134,7 @@
                 if (!fatalNetworkError) fatalNetworkError = err;
               }
             }
+            if (myLoadToken !== loadToken) return;
             if (cancelRequested) return;
             dayResults[idx] = result;
             if (result.status === 'ok') okSoFar++;
@@ -2147,6 +2162,7 @@
         }
       }
 
+      if (myLoadToken !== loadToken) return;
       if (cancelRequested) break;
 
       dayResults = dayResults.map(r => r || { status: 'error', raw: '', lines: [], message: 'did not finish loading' });
