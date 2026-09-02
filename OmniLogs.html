@@ -226,6 +226,25 @@
   button.secondary { cursor: pointer; color: var(--muted); }
   button.secondary:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
 
+  .row-link-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 3px;
+    margin: 0;
+    color: var(--muted);
+    cursor: pointer;
+    line-height: 1;
+    opacity: 0.75;
+  }
+  .row-link-btn svg { width: 12px; height: 12px; display: block; }
+  .row-link-btn:hover { opacity: 1; color: var(--text); background: var(--panel-2); border-color: var(--border); }
+  .row-link-btn.link-ok { color: var(--ok); opacity: 1; }
+  .row-link-btn.link-fail { color: var(--error); opacity: 1; }
+
   .seg-group { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
   .seg-btn {
     background: var(--panel-2);
@@ -905,6 +924,120 @@
     div.textContent = str;
     return div.innerHTML;
   }
+
+  // Builds a link that reopens a search: channel, optional username, view,
+  // and a single "date" value whose format matches the view (YYYY-MM-DD for
+  // day, YYYY-MM for month, YYYY for year). Starting from the page's own
+  // current URL (rather than a hardcoded address) means this keeps working
+  // no matter what domain the site ends up hosted on, only the query string
+  // changes, the origin and path always come from wherever the page actually is.
+  // With no `item` given, this describes the overall loaded search (used to
+  // keep the address bar in sync). With an `item`, it links that one specific
+  // day or month instead, regardless of what the address bar currently shows.
+  function buildShareUrl(item) {
+    const params = new URLSearchParams();
+    params.set('channel', currentChannel);
+    if (currentUsername) params.set('username', currentUsername);
+    if (item) {
+      if (item.day !== null && item.day !== undefined) {
+        params.set('view', 'day');
+        params.set('date', `${item.year}-${pad(item.month)}-${pad(item.day)}`);
+      } else {
+        params.set('view', 'month');
+        params.set('date', `${item.year}-${pad(item.month)}`);
+      }
+    } else {
+      params.set('view', currentView);
+      if (currentView === 'day') {
+        if (dateList[0]) params.set('date', `${dateList[0].year}-${pad(dateList[0].month)}-${pad(dateList[0].day)}`);
+      } else if (currentView === 'month') {
+        params.set('date', `${yearInput.value}-${pad(parseInt(monthSelect.value, 10))}`);
+      } else {
+        params.set('date', `${yearInput.value}`);
+      }
+    }
+    const url = new URL(window.location.href);
+    url.search = params.toString();
+    url.hash = '';
+    return url.toString();
+  }
+
+  // If the page was opened with a shareable link, prefill the fields from it
+  // and report back so the caller knows whether to auto-run the search.
+  function applySharedLinkIfPresent() {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('channel')) return false;
+
+    const validViews = ['day', 'month', 'year'];
+    const view = validViews.includes(params.get('view')) ? params.get('view') : 'month';
+    const date = params.get('date') || '';
+
+    channelInput.value = params.get('channel') || '';
+    usernameInput.value = params.get('username') || '';
+    setView(view);
+
+    if (view === 'day') {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(date)) dayInput.value = date;
+    } else if (view === 'month') {
+      const m = date.match(/^(\d{4})-(\d{2})$/);
+      if (m) {
+        yearInput.value = m[1];
+        monthSelect.value = String(parseInt(m[2], 10));
+      }
+    } else if (view === 'year') {
+      if (/^\d{4}$/.test(date)) yearInput.value = date;
+    }
+    return true;
+  }
+
+  async function copyTextToClipboard(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (err) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        return true;
+      } catch (err2) {
+        return false;
+      }
+    }
+  }
+
+  const ICON_LINK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>';
+  const ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+  const ICON_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+
+  // A small "copy link to this row" button, used on each day header and
+  // month header in the results, so a link can point at one specific day or
+  // month no matter what's currently expanded or which top-level view is active.
+  function createRowLinkBtn(item) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'row-link-btn';
+    const isDay = item.day !== null && item.day !== undefined;
+    btn.title = `Copy link to this ${isDay ? 'day' : 'month'}`;
+    btn.innerHTML = ICON_LINK;
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const ok = await copyTextToClipboard(buildShareUrl(item));
+      btn.innerHTML = ok ? ICON_CHECK : ICON_X;
+      btn.classList.add(ok ? 'link-ok' : 'link-fail');
+      setTimeout(() => {
+        btn.innerHTML = ICON_LINK;
+        btn.classList.remove('link-ok', 'link-fail');
+      }, 1200);
+    });
+    return btn;
+  }
+
   function fetchWithTimeout(url, ms, abortSignal) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), ms);
@@ -965,6 +1098,15 @@
     setView(btn.dataset.view);
   });
   setView('month');
+
+  if (applySharedLinkIfPresent()) {
+    // Deferred one tick so the fields visibly populate before the fetch
+    // kicks off, and wrapped so any unexpected error is visible in the
+    // console instead of silently doing nothing.
+    setTimeout(() => {
+      loadRange().catch(err => console.error('OmniLogs: auto-load from link failed', err));
+    }, 0);
+  }
 
   function setReverse(rev) {
     reverseOrder = rev;
@@ -1420,6 +1562,7 @@
     const dateSpan = document.createElement('span');
     dateSpan.innerHTML = `<span class="date">${labelForItem(item)}</span>`;
     left.appendChild(dateSpan);
+    left.appendChild(createRowLinkBtn(item));
 
     const right = document.createElement('span');
     right.className = 'meta';
@@ -1588,6 +1731,7 @@
     title.textContent = `${MONTHS[g.month - 1]} ${g.year}`;
     left.appendChild(chevron);
     left.appendChild(title);
+    left.appendChild(createRowLinkBtn({ year: g.year, month: g.month, day: null }));
 
     const right = document.createElement('span');
     right.className = 'month-box-meta';
@@ -2180,6 +2324,11 @@
         selectProvider(providerIdx);
         autoSwitchNote.textContent = `Using ${provider.label} (found logs)`;
         autoSwitchNote.style.display = 'block';
+        try {
+          history.replaceState(null, '', buildShareUrl());
+        } catch (e) {
+          // Address bar sync is a nice-to-have; never let it block a successful load.
+        }
         loadBtn.disabled = false;
         setLoadButtonLoading(false);
         renderMain();
