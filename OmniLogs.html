@@ -1231,43 +1231,70 @@
       return { ok: false };
     }
 
+    // How long to keep listening once the first instance confirms the
+    // channel. Waiting for literally every instance (including any that are
+    // slow or offline) makes every search pay for the slowest straggler's
+    // full timeout, that's what used to make the first search feel slow.
+    // But resolving the instant the very first one answers leaves loadRange()
+    // with only that one instance to work with, no fallback if it hiccups,
+    // and no real "best" to pick from. This grace window is the middle
+    // ground: once we know the channel exists somewhere, give the other
+    // instances a brief moment to weigh in too, so there's an actual set of
+    // confirmed options rather than just whoever happened to answer first.
+    const GRACE_MS = 1200;
+
     return new Promise((resolve) => {
       let settledCount = 0;
       let decided = false;
+      let graceTimer = null;
+
+      function finish() {
+        if (decided) return;
+        decided = true;
+        if (graceTimer) clearTimeout(graceTimer);
+        if (token !== channelCheckToken) { resolve(null); return; }
+        channelInput.classList.remove('checking');
+
+        const availableIdx = PROVIDERS
+          .map((_, i) => i)
+          .filter(i => providerStatuses[i] === 'available');
+
+        if (availableIdx.length === 0) {
+          channelInput.classList.add('error');
+          channelError.textContent = 'Channel not found in any log instance. Check the spelling, or it may not be logged anywhere.';
+          channelError.style.display = 'block';
+          resolve({ ok: false });
+          return;
+        }
+
+        channelError.style.display = 'none';
+        const bestIdx = availableIdx[0];
+        if (bestIdx !== selectedProviderIdx) {
+          selectProvider(bestIdx);
+          autoSwitchNote.textContent = `Auto-selected ${PROVIDERS[bestIdx].label}: best available instance for this channel.`;
+          autoSwitchNote.style.display = 'block';
+        } else {
+          autoSwitchNote.style.display = 'none';
+        }
+        resolve({ ok: true, bestIdx });
+      }
 
       PROVIDERS.forEach((p, i) => {
         checkProviderChannel(i, channel)
           .catch(() => ({ status: 'blocked' }))
           .then(r => {
             if (token !== channelCheckToken) {
-              if (!decided) { decided = true; resolve(null); }
+              if (!decided) { decided = true; if (graceTimer) clearTimeout(graceTimer); resolve(null); }
               return;
             }
             setProviderState(i, r.status === 'available' ? 'available' : r.status === 'no-logs' ? 'nologs' : 'blocked');
             settledCount++;
 
-            if (!decided && r.status === 'available') {
-              // Found a working instance. No need to keep waiting on the rest,
-              // they'll still fill in their own status dot as they respond,
-              // but they no longer hold up the search.
-              decided = true;
-              channelInput.classList.remove('checking');
-              channelError.style.display = 'none';
-              if (i !== selectedProviderIdx) {
-                selectProvider(i);
-                autoSwitchNote.textContent = `Auto-selected ${PROVIDERS[i].label}: best available instance for this channel.`;
-                autoSwitchNote.style.display = 'block';
-              } else {
-                autoSwitchNote.style.display = 'none';
-              }
-              resolve({ ok: true, bestIdx: i });
-            } else if (!decided && settledCount === total) {
-              decided = true;
-              channelInput.classList.remove('checking');
-              channelInput.classList.add('error');
-              channelError.textContent = 'Channel not found in any log instance. Check the spelling, or it may not be logged anywhere.';
-              channelError.style.display = 'block';
-              resolve({ ok: false });
+            if (r.status === 'available' && !graceTimer && !decided) {
+              graceTimer = setTimeout(finish, GRACE_MS);
+            }
+            if (settledCount === total) {
+              finish();
             }
           });
       });
