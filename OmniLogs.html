@@ -157,8 +157,8 @@
   .led.on-red { background: #ff5c5c; box-shadow: 0 0 3px 1px rgba(255, 92, 92, 0.45); }
   @keyframes ledFlicker { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-  .provider-picker { position: relative; }
-  .provider-picker-btn {
+  .instance-picker { position: relative; }
+  .instance-picker-btn {
     width: 210px;
     display: flex;
     align-items: center;
@@ -166,14 +166,14 @@
     cursor: pointer;
     font-family: inherit;
   }
-  .provider-picker-btn .caret {
+  .instance-picker-btn .caret {
     margin-left: auto;
     color: var(--muted);
     font-size: 14px;
     transition: transform 0.25s ease;
   }
-  .provider-picker-btn.open .caret { transform: rotate(180deg); }
-  .provider-picker-menu {
+  .instance-picker-btn.open .caret { transform: rotate(180deg); }
+  .instance-picker-menu {
     display: none;
     position: absolute;
     top: calc(100% + 4px);
@@ -187,8 +187,8 @@
     z-index: 50;
     box-shadow: 0 10px 28px rgba(0,0,0,0.45);
   }
-  .provider-picker-menu.open { display: block; }
-  .provider-option {
+  .instance-picker-menu.open { display: block; }
+  .instance-option {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -197,8 +197,8 @@
     font-size: 12.5px;
     font-family: inherit;
   }
-  .provider-option:hover { background: var(--panel); }
-  .provider-option.selected { background: var(--accent-dim); color: #fff; }
+  .instance-option:hover { background: var(--panel); }
+  .instance-option.selected { background: var(--accent-dim); color: #fff; }
 
   button.primary {
     background: var(--accent);
@@ -563,13 +563,13 @@
 
     <div class="field">
       <label>Instance</label>
-      <div class="provider-picker" id="providerPicker">
-        <button type="button" class="provider-picker-btn" id="providerBtn">
-          <span class="led" id="providerBtnLed"></span>
-          <span id="providerBtnLabel"></span>
+      <div class="instance-picker" id="instancePicker">
+        <button type="button" class="instance-picker-btn" id="instanceBtn">
+          <span class="led" id="instanceBtnLed"></span>
+          <span id="instanceBtnLabel"></span>
           <span class="caret">&#9662;</span>
         </button>
-        <div class="provider-picker-menu" id="providerMenu"></div>
+        <div class="instance-picker-menu" id="instanceMenu"></div>
       </div>
     </div>
 
@@ -674,7 +674,7 @@
 <script>
 (function () {
   // Hardcoded fallback list
-  const FALLBACK_PROVIDERS = [
+  const FALLBACK_INSTANCES = [
     { label: 'logs.potat.app',         host: 'logs.potat.app' },
     { label: 'logs.spanix.team',       host: 'logs.spanix.team' },
     { label: 'logs.nadeko.net',        host: 'logs.nadeko.net' },
@@ -691,7 +691,7 @@
     { label: 'logs.jimmyboy.dev',      host: 'logs.jimmyboy.dev' },
   ];
 
-  let PROVIDERS = FALLBACK_PROVIDERS.slice();
+  let INSTANCES = FALLBACK_INSTANCES.slice();
 
   // Helper: detect ID input
   function isIdInput(str) {
@@ -702,11 +702,11 @@
     return match ? match[1] : null;
   }
 
-  const providerBtn = document.getElementById('providerBtn');
-  const providerBtnLed = document.getElementById('providerBtnLed');
-  const providerBtnLabel = document.getElementById('providerBtnLabel');
-  const providerMenu = document.getElementById('providerMenu');
-  const providerPicker = document.getElementById('providerPicker');
+  const instanceBtn = document.getElementById('instanceBtn');
+  const instanceBtnLed = document.getElementById('instanceBtnLed');
+  const instanceBtnLabel = document.getElementById('instanceBtnLabel');
+  const instanceMenu = document.getElementById('instanceMenu');
+  const instancePicker = document.getElementById('instancePicker');
   const monthSelect = document.getElementById('month');
   const yearInput = document.getElementById('year');
   const dayInput = document.getElementById('day');
@@ -756,29 +756,29 @@
   });
 
   // --- Instance status fetching from /instances ---
-  let providerOptionEls = [];
-  let selectedProviderIdx = 0;
-  let providerStatuses = [];
+  let instanceOptionEls = [];
+  let selectedInstanceIdx = 0;
+  let instanceStatuses = [];
   let channelListCache = new Map();
   let channelListPromises = new Map();
   let lastCheckedChannel = null;
   let lastCheckResult = null;
 
-  function resetProviderState(providers) {
-    providerStatuses = new Array(providers.length).fill('idle');
+  function resetInstanceState(instances) {
+    instanceStatuses = new Array(instances.length).fill('idle');
     channelListCache.clear();
     channelListPromises.clear();
     lastCheckedChannel = null;
     lastCheckResult = null;
   }
 
-  function rebuildProviderOptions(providers) {
-    resetProviderState(providers);
-    providerMenu.innerHTML = '';
-    providerOptionEls = [];
-    providers.forEach((p, i) => {
+  function rebuildInstanceOptions(instances) {
+    resetInstanceState(instances);
+    instanceMenu.innerHTML = '';
+    instanceOptionEls = [];
+    instances.forEach((p, i) => {
       const row = document.createElement('div');
-      row.className = 'provider-option';
+      row.className = 'instance-option';
       const led = document.createElement('span');
       led.className = 'led';
       const label = document.createElement('span');
@@ -786,32 +786,32 @@
       row.appendChild(led);
       row.appendChild(label);
       row.addEventListener('click', () => {
-        selectProvider(i);
+        selectInstance(i);
         autoSwitchNote.style.display = 'none';
-        closeProviderMenu();
+        closeInstanceMenu();
       });
-      providerMenu.appendChild(row);
-      providerOptionEls.push({ rowEl: row, ledEl: led });
+      instanceMenu.appendChild(row);
+      instanceOptionEls.push({ rowEl: row, ledEl: led });
     });
-    if (selectedProviderIdx >= providers.length) selectedProviderIdx = 0;
-    selectProvider(selectedProviderIdx);
+    if (selectedInstanceIdx >= instances.length) selectedInstanceIdx = 0;
+    selectInstance(selectedInstanceIdx);
   }
 
-  function selectProvider(idx) {
-    if (idx >= PROVIDERS.length) idx = 0;
-    selectedProviderIdx = idx;
-    providerBtnLabel.textContent = PROVIDERS[idx].label;
-    providerBtnLed.className = providerOptionEls[idx]?.ledEl.className || 'led';
-    providerOptionEls.forEach((o, i) => o.rowEl.classList.toggle('selected', i === idx));
+  function selectInstance(idx) {
+    if (idx >= INSTANCES.length) idx = 0;
+    selectedInstanceIdx = idx;
+    instanceBtnLabel.textContent = INSTANCES[idx].label;
+    instanceBtnLed.className = instanceOptionEls[idx]?.ledEl.className || 'led';
+    instanceOptionEls.forEach((o, i) => o.rowEl.classList.toggle('selected', i === idx));
   }
 
-  async function fetchProvidersFromInstances() {
+  async function refreshInstanceList() {
     try {
       const res = await fetch('https://logs.zonian.dev/instances', { mode: 'cors' });
       if (!res.ok) throw new Error('Instances fetch failed');
       const data = await res.json();
       if (Array.isArray(data) && data.length) {
-        const newProviders = data
+        const newInstances = data
           .filter(item => item.status === 'UP' || item.status === 'up')
           .map(item => ({
             host: item.domain || item.host || item.url,
@@ -820,36 +820,36 @@
           .filter(p => p.host)
           .sort((a, b) => a.host.localeCompare(b.host));
 
-        if (newProviders.length) {
-          PROVIDERS = newProviders;
+        if (newInstances.length) {
+          INSTANCES = newInstances;
         } else {
-          PROVIDERS = FALLBACK_PROVIDERS.slice();
+          INSTANCES = FALLBACK_INSTANCES.slice();
         }
       } else {
-        PROVIDERS = FALLBACK_PROVIDERS.slice();
+        INSTANCES = FALLBACK_INSTANCES.slice();
       }
     } catch (e) {
       console.warn('Failed to fetch instances, using fallback list:', e);
-      PROVIDERS = FALLBACK_PROVIDERS.slice();
+      INSTANCES = FALLBACK_INSTANCES.slice();
     }
-    rebuildProviderOptions(PROVIDERS);
+    rebuildInstanceOptions(INSTANCES);
   }
 
-  rebuildProviderOptions(PROVIDERS);
-  fetchProvidersFromInstances();
+  rebuildInstanceOptions(INSTANCES);
+  refreshInstanceList();
 
-  function toggleProviderMenu() {
-    if (providerBtn.disabled) return;
-    providerMenu.classList.toggle('open');
-    providerBtn.classList.toggle('open');
+  function toggleInstanceMenu() {
+    if (instanceBtn.disabled) return;
+    instanceMenu.classList.toggle('open');
+    instanceBtn.classList.toggle('open');
   }
-  function closeProviderMenu() {
-    providerMenu.classList.remove('open');
-    providerBtn.classList.remove('open');
+  function closeInstanceMenu() {
+    instanceMenu.classList.remove('open');
+    instanceBtn.classList.remove('open');
   }
-  providerBtn.addEventListener('click', toggleProviderMenu);
-  document.addEventListener('click', e => { if (!providerPicker.contains(e.target)) closeProviderMenu(); });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeProviderMenu(); });
+  instanceBtn.addEventListener('click', toggleInstanceMenu);
+  document.addEventListener('click', e => { if (!instancePicker.contains(e.target)) closeInstanceMenu(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeInstanceMenu(); });
 
   function setDefaultDates() {
     const { year, month, day } = getUTCToday();
@@ -892,10 +892,10 @@
   function daysInMonth(year, month) { return new Date(year, month, 0).getDate(); }
   function pad(n) { return String(n).padStart(2, '0'); }
 
-  // The log providers (justlog instances) bucket messages by UTC calendar day,
-  // not by the visitor's local day. Every "what is today" check in this app
-  // must use UTC, or the day/month/year boundaries drift against the
-  // provider's boundaries and totals stop matching what the provider itself
+  // The log instances (justlog-based servers) bucket messages by UTC calendar
+  // day, not by the visitor's local day. Every "what is today" check in this
+  // app must use UTC, or the day/month/year boundaries drift against the
+  // instance's boundaries and totals stop matching what the instance itself
   // reports for the same period.
   function getUTCToday() {
     const now = new Date();
@@ -1047,7 +1047,7 @@
     return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timeoutId));
   }
   function setControlsDisabled(disabled) {
-    providerBtn.disabled = disabled;
+    instanceBtn.disabled = disabled;
     channelInput.disabled = disabled;
     usernameInput.disabled = disabled;
     monthSelect.disabled = disabled;
@@ -1127,12 +1127,12 @@
     if (state === 'idle') return 'led';
     return 'led on-red';
   }
-  function setProviderState(idx, state) {
-    if (idx >= providerStatuses.length) return;
-    providerStatuses[idx] = state;
+  function setInstanceState(idx, state) {
+    if (idx >= instanceStatuses.length) return;
+    instanceStatuses[idx] = state;
     const cls = ledClassForState(state);
-    if (providerOptionEls[idx]) providerOptionEls[idx].ledEl.className = cls;
-    if (idx === selectedProviderIdx) providerBtnLed.className = cls;
+    if (instanceOptionEls[idx]) instanceOptionEls[idx].ledEl.className = cls;
+    if (idx === selectedInstanceIdx) instanceBtnLed.className = cls;
   }
 
   function parseChannelList(data) {
@@ -1156,9 +1156,9 @@
     return set;
   }
 
-  async function getProviderChannelList(hostIdx) {
-    if (hostIdx >= PROVIDERS.length) return null;
-    const host = PROVIDERS[hostIdx].host;
+  async function getInstanceChannelList(hostIdx) {
+    if (hostIdx >= INSTANCES.length) return null;
+    const host = INSTANCES[hostIdx].host;
     if (channelListCache.has(hostIdx)) return channelListCache.get(hostIdx);
     if (channelListPromises.has(hostIdx)) return channelListPromises.get(hostIdx);
     const p = (async () => {
@@ -1197,18 +1197,18 @@
     }
   }
 
-  async function checkProviderChannel(hostIdx, channel) {
-    if (hostIdx >= PROVIDERS.length) return { status: 'blocked' };
-    const host = PROVIDERS[hostIdx].host;
+  async function checkInstanceChannel(hostIdx, channel) {
+    if (hostIdx >= INSTANCES.length) return { status: 'blocked' };
+    const host = INSTANCES[hostIdx].host;
 
     // A single tiny request that answers "does this channel have logs here?"
-    // is far cheaper than downloading the provider's full channel list, which
+    // is far cheaper than downloading the instance's full channel list, which
     // can run into the thousands of entries. Try that first; only fall back
     // to the full list if the quick probe couldn't get a clear answer.
     const probe = await probeChannelFallback(host, channel);
     if (probe.status !== 'blocked') return probe;
 
-    const list = await getProviderChannelList(hostIdx);
+    const list = await getInstanceChannelList(hostIdx);
     if (list) return { status: list.has(channel.toLowerCase()) ? 'available' : 'no-logs' };
     return probe;
   }
@@ -1220,9 +1220,17 @@
     channelInput.classList.remove('error');
     channelInput.classList.add('checking');
     channelError.style.display = 'none';
-    PROVIDERS.forEach((_, i) => setProviderState(i, 'checking'));
 
-    const total = PROVIDERS.length;
+    // Snapshot the instance list for the duration of this check. INSTANCES
+    // itself only ever gets reassigned once, shortly after page load, once
+    // the live instance list finishes fetching. That's a narrow window, but
+    // if a check happens to start inside it, everything below should keep
+    // referring to the same list it started with, not whatever INSTANCES
+    // happens to point to by the time an awaited response comes back.
+    const instances = INSTANCES;
+    instances.forEach((_, i) => setInstanceState(i, 'checking'));
+
+    const total = instances.length;
     if (total === 0) {
       channelInput.classList.remove('checking');
       channelInput.classList.add('error');
@@ -1255,9 +1263,9 @@
         if (token !== channelCheckToken) { resolve(null); return; }
         channelInput.classList.remove('checking');
 
-        const availableIdx = PROVIDERS
+        const availableIdx = instances
           .map((_, i) => i)
-          .filter(i => providerStatuses[i] === 'available');
+          .filter(i => instanceStatuses[i] === 'available');
 
         if (availableIdx.length === 0) {
           channelInput.classList.add('error');
@@ -1269,9 +1277,9 @@
 
         channelError.style.display = 'none';
         const bestIdx = availableIdx[0];
-        if (bestIdx !== selectedProviderIdx) {
-          selectProvider(bestIdx);
-          autoSwitchNote.textContent = `Auto-selected ${PROVIDERS[bestIdx].label}: best available instance for this channel.`;
+        if (bestIdx !== selectedInstanceIdx) {
+          selectInstance(bestIdx);
+          autoSwitchNote.textContent = `Auto-selected ${instances[bestIdx].label}: best available instance for this channel.`;
           autoSwitchNote.style.display = 'block';
         } else {
           autoSwitchNote.style.display = 'none';
@@ -1279,15 +1287,15 @@
         resolve({ ok: true, bestIdx });
       }
 
-      PROVIDERS.forEach((p, i) => {
-        checkProviderChannel(i, channel)
+      instances.forEach((p, i) => {
+        checkInstanceChannel(i, channel)
           .catch(() => ({ status: 'blocked' }))
           .then(r => {
             if (token !== channelCheckToken) {
               if (!decided) { decided = true; if (graceTimer) clearTimeout(graceTimer); resolve(null); }
               return;
             }
-            setProviderState(i, r.status === 'available' ? 'available' : r.status === 'no-logs' ? 'nologs' : 'blocked');
+            setInstanceState(i, r.status === 'available' ? 'available' : r.status === 'no-logs' ? 'nologs' : 'blocked');
             settledCount++;
 
             if (r.status === 'available' && !graceTimer && !decided) {
@@ -1317,7 +1325,7 @@
       channelInput.classList.remove('error', 'checking');
       channelError.style.display = 'none';
       autoSwitchNote.style.display = 'none';
-      PROVIDERS.forEach((_, i) => setProviderState(i, 'idle'));
+      INSTANCES.forEach((_, i) => setInstanceState(i, 'idle'));
       lastCheckedChannel = null;
       lastCheckResult = null;
       return;
@@ -1326,7 +1334,7 @@
       channelInput.classList.remove('error', 'checking');
       channelError.style.display = 'none';
       autoSwitchNote.style.display = 'none';
-      PROVIDERS.forEach((_, i) => setProviderState(i, 'idle'));
+      INSTANCES.forEach((_, i) => setInstanceState(i, 'idle'));
       lastCheckedChannel = null;
       lastCheckResult = null;
       return;
@@ -1341,7 +1349,7 @@
       channelInput.classList.remove('error', 'checking');
       channelError.style.display = 'none';
       autoSwitchNote.style.display = 'none';
-      PROVIDERS.forEach((_, i) => setProviderState(i, 'idle'));
+      INSTANCES.forEach((_, i) => setInstanceState(i, 'idle'));
       lastCheckedChannel = null;
       lastCheckResult = null;
       return;
@@ -2114,16 +2122,16 @@
       }
     }
 
-    let availableProviders;
+    let availableInstances;
     if (isId) {
-      availableProviders = PROVIDERS.map((_, idx) => idx);
+      availableInstances = INSTANCES.map((_, idx) => idx);
     } else {
-      availableProviders = providerStatuses
+      availableInstances = instanceStatuses
         .map((state, idx) => state === 'available' ? idx : -1)
         .filter(idx => idx !== -1);
     }
 
-    if (availableProviders.length === 0) {
+    if (availableInstances.length === 0) {
       loadBtn.disabled = false;
       setLoadButtonLoading(false);
       showEmptyState(`<div>No instances available for this channel. Check the channel name.</div>`);
@@ -2156,26 +2164,33 @@
 
     let startIdx;
     if (isId) {
-      startIdx = availableProviders.indexOf(selectedProviderIdx);
+      startIdx = availableInstances.indexOf(selectedInstanceIdx);
       if (startIdx === -1) startIdx = 0;
     } else {
-      startIdx = availableProviders.indexOf(selectedProviderIdx);
+      startIdx = availableInstances.indexOf(selectedInstanceIdx);
     }
-    const orderedProviders = availableProviders.slice(startIdx).concat(availableProviders.slice(0, startIdx));
+    const orderedInstances = availableInstances.slice(startIdx).concat(availableInstances.slice(0, startIdx));
+
+    // Snapshot the instance list for this whole search, same reasoning as in
+    // runChannelCheck: INSTANCES only ever gets reassigned once, shortly
+    // after page load, but this loop can run for a while (many awaits across
+    // possibly many instances), so it should stay consistent with the list it
+    // started with rather than re-reading a global that could have changed.
+    const searchInstances = INSTANCES;
 
     let success = false;
     let finalLabel = '';
     let finalInProgressNote = '';
     const urlChannel = isId ? rawChannel : channel;
 
-    for (const providerIdx of orderedProviders) {
+    for (const instanceIdx of orderedInstances) {
       if (myLoadToken !== loadToken) return;
       if (cancelRequested) break;
 
-      const provider = PROVIDERS[providerIdx];
-      const host = provider.host;
+      const instance = searchInstances[instanceIdx];
+      const host = instance.host;
 
-      statusText.textContent = `Checking ${provider.label}...`;
+      statusText.textContent = `Checking ${instance.label}...`;
 
       let list, isFuture, label, inProgressNote, invalid;
       let useIndex = false;
@@ -2245,9 +2260,9 @@
         }
       }
 
-      if (providerIdx !== selectedProviderIdx) {
-        selectProvider(providerIdx);
-        autoSwitchNote.textContent = `Trying ${provider.label}...`;
+      if (instanceIdx !== selectedInstanceIdx) {
+        selectInstance(instanceIdx);
+        autoSwitchNote.textContent = `Trying ${instance.label}...`;
         autoSwitchNote.style.display = 'block';
       }
 
@@ -2258,12 +2273,12 @@
       currentUserMode = userMode;
       dateList = list;
       dayResults = new Array(list.length).fill(null);
-      currentLabel = provider.label;
-      corsHost.textContent = provider.host;
+      currentLabel = instance.label;
+      corsHost.textContent = instance.host;
       corsBanner.classList.remove('visible');
 
       const total = list.length;
-      statusText.textContent = `Loading ${urlChannel} from ${provider.label}`;
+      statusText.textContent = `Loading ${urlChannel} from ${instance.label}`;
       progressFill.style.width = '0%';
       progressPct.textContent = '0%';
       setFooterLoading(0, total, 0);
@@ -2316,7 +2331,7 @@
             }
             completed++;
             const pct = Math.round((completed / total) * 100);
-            statusText.textContent = `Loading ${urlChannel} from ${provider.label} (${completed} / ${total})`;
+            statusText.textContent = `Loading ${urlChannel} from ${instance.label} (${completed} / ${total})`;
             progressPct.textContent = `${pct}%`;
             progressFill.style.width = `${pct}%`;
             setFooterLoading(completed, total, okSoFar);
@@ -2346,10 +2361,10 @@
         finalLabel = label;
         finalInProgressNote = inProgressNote || '';
         const who = userMode ? `${username} in ${urlChannel}` : urlChannel;
-        setFooterDone(`${who}, ${label} (${provider.label}): ${okDays}/${total} with logs, ${totalLines} lines total.${finalInProgressNote}`);
+        setFooterDone(`${who}, ${label} (${instance.label}): ${okDays}/${total} with logs, ${totalLines} lines total.${finalInProgressNote}`);
         window._logSplicerLabel = label;
-        selectProvider(providerIdx);
-        autoSwitchNote.textContent = `Using ${provider.label} (found logs)`;
+        selectInstance(instanceIdx);
+        autoSwitchNote.textContent = `Using ${instance.label} (found logs)`;
         autoSwitchNote.style.display = 'block';
         try {
           history.replaceState(null, '', buildShareUrl());
@@ -2367,7 +2382,7 @@
         activeAbortController = null;
         return;
       } else {
-        autoSwitchNote.textContent = `No logs found on ${provider.label}, trying next...`;
+        autoSwitchNote.textContent = `No logs found on ${instance.label}, trying next...`;
         autoSwitchNote.style.display = 'block';
       }
     }
@@ -2412,6 +2427,11 @@
     if (loading) {
       cancelSearch();
     }
+    // Supersede any in-flight search the same way a brand-new search would,
+    // so its cancellation cleanup (if it hasn't unwound yet) recognizes
+    // itself as stale via the existing guards and quietly does nothing,
+    // instead of possibly overwriting the reset below a moment later.
+    loadToken++;
     dateList = [];
     dayResults = [];
     slotEls = [];
@@ -2422,7 +2442,7 @@
     showEmptyState(welcomeText);
     setFooterDone('No logs loaded yet.');
     window._logSplicerLabel = undefined;
-    PROVIDERS.forEach((_, i) => setProviderState(i, 'idle'));
+    INSTANCES.forEach((_, i) => setInstanceState(i, 'idle'));
     lastCheckedChannel = null;
     lastCheckResult = null;
     autoSwitchNote.style.display = 'none';
