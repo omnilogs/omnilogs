@@ -763,14 +763,8 @@
   let channelListPromises = new Map();
   let lastCheckedChannel = null;
   let lastCheckResult = null;
-  // Moved above its first users so resetInstanceState can safely invalidate
-  // any in-flight channel check by bumping it (see fix #6).
-  let channelCheckToken = 0;
 
   function resetInstanceState(instances) {
-    // Invalidate any currently-running runChannelCheck so its async writes
-    // cannot land in the freshly-reset state below.
-    channelCheckToken++;
     instanceStatuses = new Array(instances.length).fill('idle');
     channelListCache.clear();
     channelListPromises.clear();
@@ -896,8 +890,6 @@
   }
 
   function daysInMonth(year, month) { return new Date(year, month, 0).getDate(); }
-  // DST-safe leap-year test (fix #5) — replaces a floating-point ms-diff.
-  function isLeapYear(y) { return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0; }
   function pad(n) { return String(n).padStart(2, '0'); }
 
   // The log instances (justlog-based servers) bucket messages by UTC calendar
@@ -1049,21 +1041,10 @@
   function fetchWithTimeout(url, ms, abortSignal) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), ms);
-    let abortHandler = null;
     if (abortSignal) {
-      if (abortSignal.aborted) {
-        controller.abort();
-      } else {
-        abortHandler = () => controller.abort();
-        abortSignal.addEventListener('abort', abortHandler);
-      }
+      abortSignal.addEventListener('abort', () => controller.abort());
     }
-    return fetch(url, { signal: controller.signal }).finally(() => {
-      clearTimeout(timeoutId);
-      if (abortSignal && abortHandler) {
-        abortSignal.removeEventListener('abort', abortHandler);
-      }
-    });
+    return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timeoutId));
   }
   function setControlsDisabled(disabled) {
     instanceBtn.disabled = disabled;
@@ -1073,9 +1054,6 @@
     yearInput.disabled = disabled;
     dayInput.disabled = disabled;
     viewSeg.querySelectorAll('.seg-btn').forEach(b => b.disabled = disabled);
-    // Fix #2: disabling the filter too prevents mid-load input from producing
-    // a partially-rendered filtered result set that never fills in.
-    filterInput.disabled = disabled;
   }
 
   function showEmptyState(html) {
@@ -1234,6 +1212,8 @@
     if (list) return { status: list.has(channel.toLowerCase()) ? 'available' : 'no-logs' };
     return probe;
   }
+
+  let channelCheckToken = 0;
 
   async function runChannelCheck(channel) {
     const token = ++channelCheckToken;
@@ -1730,71 +1710,10 @@
     order.forEach(i => {
       const slot = buildSkeletonBlock(dateList[i], true);
       attachCollapseHandler(slot, i);
-      // Fix #3: tag each slot with its dateList index so insertDayRowInMonth
-      // can locate the correct insertion point relative to existing siblings.
-      slot.el.dataset.idx = String(i);
       slotEls[i] = slot;
       container.appendChild(slot.el);
       if (dayResults[i]) fillSlotCollapsed(slot, dayResults[i]);
     });
-  }
-
-  // Fix #3: incrementally insert a single new OK day-slot into an already-
-  // expanded month body, instead of tearing down and rebuilding the whole
-  // month every time one result arrives (which is what used to collapse any
-  // day the user had expanded mid-load, and produced O(n²) DOM churn on
-  // year views with hundreds of days).
-  function insertDayRowInMonth(gi, idx) {
-    const group = monthGroups[gi];
-    if (!group || !group.expanded) return;
-
-    // userMode year: each month group holds exactly one item (day=null) and
-    // renders its lines directly, no day slots exist. Full rebuild is fine
-    // here — there's only one item per group.
-    const indices = group.indices;
-    const isUserYear = currentUserMode && currentView === 'year' &&
-      indices.length === 1 && dateList[indices[0]] && dateList[indices[0]].day === null;
-    if (isUserYear) {
-      rebuildMonthBody(gi);
-      return;
-    }
-
-    const container = group.bodyContainer;
-
-    // If the "No logs this month" placeholder is showing, remove it now —
-    // the first real day is about to be inserted.
-    const placeholder = container.querySelector('.day-empty-note');
-    if (placeholder) container.innerHTML = '';
-
-    const slot = buildSkeletonBlock(dateList[idx], true);
-    attachCollapseHandler(slot, idx);
-    slot.el.dataset.idx = String(idx);
-    slotEls[idx] = slot;
-    if (dayResults[idx]) fillSlotCollapsed(slot, dayResults[idx]);
-
-    // Compute this item's display position among currently-OK indices, and
-    // walk existing tagged children to find the first one that comes after it.
-    const okIndices = indices.filter(i => dayResults[i] && dayResults[i].status === 'ok');
-    const order = reverseOrder ? okIndices.slice().reverse() : okIndices;
-    const myPos = order.indexOf(idx);
-
-    if (myPos < 0) {
-      // Shouldn't happen (we just wrote an OK result for idx), but if it does
-      // appending is safe and visible.
-      container.appendChild(slot.el);
-      return;
-    }
-
-    let insertBefore = null;
-    for (const child of container.children) {
-      if (!child.dataset || child.dataset.idx === undefined) continue;
-      const childIdx = parseInt(child.dataset.idx, 10);
-      const childPos = order.indexOf(childIdx);
-      if (childPos > myPos) { insertBefore = child; break; }
-    }
-
-    if (insertBefore) container.insertBefore(slot.el, insertBefore);
-    else container.appendChild(slot.el);
   }
 
   function rebuildMonthBody(gi) {
@@ -2162,9 +2081,6 @@
   // Main LOAD function
   // =========================================================
   async function loadRange() {
-    // Fix #7: cancel any pending filter debounce so it can't fire mid-load
-    // and briefly render against a half-populated result set.
-    clearTimeout(filterDebounceTimer);
     logCache.clear();
     filterInput.value = '';
     pendingFilterQuery = null;
@@ -2492,14 +2408,11 @@
     }
 
     autoSwitchNote.style.display = 'none';
-    // Fix #1: escape user-controlled values before they go into innerHTML.
-    const safeChannel = escapeHtml(urlChannel);
-    const safeUser = escapeHtml(username);
     const msg = userMode
-      ? `<div>No logs found for user ${safeUser} in ${safeChannel} on any instance for the selected period.</div>
+      ? `<div>No logs found for user ${username} in ${urlChannel} on any instance for the selected period.</div>
          <div style="font-size:11px;max-width:440px;">They may not have chatted there during this period,
          or none of the instances have data that far back. Try adjusting the date or instance.</div>`
-      : `<div>No chat logs found for ${safeChannel} on any instance for the selected period.</div>
+      : `<div>No chat logs found for ${urlChannel} on any instance for the selected period.</div>
          <div style="font-size:11px;max-width:440px;">The channel may not have been tracked by any
          instance during this period, or may have opted out of logging. Try a different date.</div>`;
     showEmptyState(msg);
@@ -2573,30 +2486,22 @@
     summaryText.textContent = text;
   }
 
-  // Fix #3: only rebuild the whole month body when a brand-new OK day needs
-  // to be inserted; otherwise fill the existing slot in place. This stops the
-  // O(n²) rebuild storm that used to fire once per incoming result during
-  // load, and stops collapsing any day a user had expanded mid-fetch.
   function updateDisplayForResult(idx, result) {
     const q = filterInput.value.trim();
     const flatMode = currentView === 'day' || (currentUserMode && currentView === 'month') || q;
 
     if (flatMode) {
       if (slotEls[idx]) fillSlotExpanded(slotEls[idx], result, q);
-      return;
+    } else {
+      if (slotEls[idx]) fillSlotCollapsed(slotEls[idx], result);
+      const gi = idxToGroup[idx];
+      if (gi !== undefined && gi >= 0) {
+        updateGroupHeader(gi);
+        if (result.status === 'ok' && monthGroups[gi] && monthGroups[gi].expanded) {
+          rebuildMonthBody(gi);
+        }
+      }
     }
-
-    const gi = idxToGroup[idx];
-    const slotExists = slotEls[idx] != null;
-    const group = gi >= 0 ? monthGroups[gi] : null;
-
-    if (slotExists) {
-      fillSlotCollapsed(slotEls[idx], result);
-    } else if (result.status === 'ok' && group && group.expanded) {
-      insertDayRowInMonth(gi, idx);
-    }
-
-    if (gi >= 0) updateGroupHeader(gi);
   }
 
   // ---- Fallback date lists ----
@@ -2646,7 +2551,7 @@
       }
     }
     const label = `${year}`;
-    const fullDaysInYear = isLeapYear(year) ? 366 : 365;
+    const fullDaysInYear = (new Date(year, 11, 31) - new Date(year, 0, 1)) / 86400000 + 1;
     const inProgressNote = (isCurrentYear && list.length < fullDaysInYear)
       ? ` (${year} is still in progress: showing through today. Reload later for more.)`
       : '';
