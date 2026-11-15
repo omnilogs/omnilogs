@@ -492,7 +492,7 @@
 
   .hidden-field { display: none !important; }
 
-  /* Confirmation overlay for large filter */
+  
   .confirm-overlay {
     display: none;
     position: fixed;
@@ -657,7 +657,6 @@
   </footer>
 </div>
 
-<!-- Confirmation overlay for filter -->
 <div class="confirm-overlay" id="confirmOverlay">
   <div class="confirm-box">
     <h2>⚠️ Large Filter Request</h2>
@@ -673,7 +672,6 @@
 
 <script>
 (function () {
-  // Hardcoded fallback list
   const FALLBACK_INSTANCES = [
     { label: 'logs.potat.app',         host: 'logs.potat.app' },
     { label: 'logs.spanix.team',       host: 'logs.spanix.team' },
@@ -693,7 +691,6 @@
 
   let INSTANCES = FALLBACK_INSTANCES.slice();
 
-  // Helper: detect ID input
   function isIdInput(str) {
     return /^id:\s*\d+$/i.test(str.trim());
   }
@@ -755,7 +752,6 @@
     monthSelect.appendChild(opt);
   });
 
-  // --- Instance status fetching from /instances ---
   let instanceOptionEls = [];
   let selectedInstanceIdx = 0;
   let instanceStatuses = [];
@@ -892,11 +888,6 @@
   function daysInMonth(year, month) { return new Date(year, month, 0).getDate(); }
   function pad(n) { return String(n).padStart(2, '0'); }
 
-  // The log instances (justlog-based servers) bucket messages by UTC calendar
-  // day, not by the visitor's local day. Every "what is today" check in this
-  // app must use UTC, or the day/month/year boundaries drift against the
-  // instance's boundaries and totals stop matching what the instance itself
-  // reports for the same period.
   function getUTCToday() {
     const now = new Date();
     return { year: now.getUTCFullYear(), month: now.getUTCMonth() + 1, day: now.getUTCDate() };
@@ -925,15 +916,6 @@
     return div.innerHTML;
   }
 
-  // Builds a link that reopens a search: channel, optional username, view,
-  // and a single "date" value whose format matches the view (YYYY-MM-DD for
-  // day, YYYY-MM for month, YYYY for year). Starting from the page's own
-  // current URL (rather than a hardcoded address) means this keeps working
-  // no matter what domain the site ends up hosted on, only the query string
-  // changes, the origin and path always come from wherever the page actually is.
-  // With no `item` given, this describes the overall loaded search (used to
-  // keep the address bar in sync). With an `item`, it links that one specific
-  // day or month instead, regardless of what the address bar currently shows.
   function buildShareUrl(item) {
     const params = new URLSearchParams();
     params.set('channel', currentChannel);
@@ -962,8 +944,6 @@
     return url.toString();
   }
 
-  // If the page was opened with a shareable link, prefill the fields from it
-  // and report back so the caller knows whether to auto-run the search.
   function applySharedLinkIfPresent() {
     const params = new URLSearchParams(window.location.search);
     if (!params.has('channel')) return false;
@@ -1015,9 +995,6 @@
   const ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
   const ICON_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
 
-  // A small "copy link to this row" button, used on each day header and
-  // month header in the results, so a link can point at one specific day or
-  // month no matter what's currently expanded or which top-level view is active.
   function createRowLinkBtn(item) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -1054,6 +1031,7 @@
     yearInput.disabled = disabled;
     dayInput.disabled = disabled;
     viewSeg.querySelectorAll('.seg-btn').forEach(b => b.disabled = disabled);
+    filterInput.disabled = disabled;
   }
 
   function showEmptyState(html) {
@@ -1100,9 +1078,6 @@
   setView('month');
 
   if (applySharedLinkIfPresent()) {
-    // Deferred one tick so the fields visibly populate before the fetch
-    // kicks off, and wrapped so any unexpected error is visible in the
-    // console instead of silently doing nothing.
     setTimeout(() => {
       loadRange().catch(err => console.error('OmniLogs: auto-load from link failed', err));
     }, 0);
@@ -1116,10 +1091,6 @@
   }
   reverseBtn.addEventListener('click', () => { if (!loading) setReverse(!reverseOrder); });
   setReverse(true);
-
-  // =========================================================
-  // Instance channel-availability checking
-  // =========================================================
 
   function ledClassForState(state) {
     if (state === 'checking') return 'led checking';
@@ -1184,7 +1155,7 @@
       const res = await fetchWithTimeout(`https://${host}/channel/${encodeURIComponent(channel)}/stats`, 7000);
       if (res.status === 404) return { status: 'no-logs' };
       if (res.ok) return { status: 'available' };
-    } catch (_) { /* fall through */ }
+    } catch (_) {  }
     try {
       const today = getUTCToday();
       const url = `https://${host}/channel/${encodeURIComponent(channel)}/${today.year}/${today.month}/${today.day}`;
@@ -1201,10 +1172,6 @@
     if (hostIdx >= INSTANCES.length) return { status: 'blocked' };
     const host = INSTANCES[hostIdx].host;
 
-    // A single tiny request that answers "does this channel have logs here?"
-    // is far cheaper than downloading the instance's full channel list, which
-    // can run into the thousands of entries. Try that first; only fall back
-    // to the full list if the quick probe couldn't get a clear answer.
     const probe = await probeChannelFallback(host, channel);
     if (probe.status !== 'blocked') return probe;
 
@@ -1221,12 +1188,6 @@
     channelInput.classList.add('checking');
     channelError.style.display = 'none';
 
-    // Snapshot the instance list for the duration of this check. INSTANCES
-    // itself only ever gets reassigned once, shortly after page load, once
-    // the live instance list finishes fetching. That's a narrow window, but
-    // if a check happens to start inside it, everything below should keep
-    // referring to the same list it started with, not whatever INSTANCES
-    // happens to point to by the time an awaited response comes back.
     const instances = INSTANCES;
     instances.forEach((_, i) => setInstanceState(i, 'checking'));
 
@@ -1239,16 +1200,6 @@
       return { ok: false };
     }
 
-    // How long to keep listening once the first instance confirms the
-    // channel. Waiting for literally every instance (including any that are
-    // slow or offline) makes every search pay for the slowest straggler's
-    // full timeout, that's what used to make the first search feel slow.
-    // But resolving the instant the very first one answers leaves loadRange()
-    // with only that one instance to work with, no fallback if it hiccups,
-    // and no real "best" to pick from. This grace window is the middle
-    // ground: once we know the channel exists somewhere, give the other
-    // instances a brief moment to weigh in too, so there's an actual set of
-    // confirmed options rather than just whoever happened to answer first.
     const GRACE_MS = 1200;
 
     return new Promise((resolve) => {
@@ -1358,10 +1309,6 @@
     if (val) ensureChecked(val);
   });
 
-  // =========================================================
-  // Fetching + caching with ID support
-  // =========================================================
-
   let logCache = new Map();
 
   function filterLinesByDay(lines, targetYear, targetMonth, targetDay) {
@@ -1460,7 +1407,6 @@
     return result;
   }
 
-  // ---- Channel Index (with timeout) ----
   async function getChannelIndex(host, channel, abortSignal) {
     const key = `${host}|${channel}|index`;
     if (logCache.has(key)) return logCache.get(key);
@@ -1553,7 +1499,6 @@
     return filtered;
   }
 
-  // ---- Render helpers ----
   function renderDayBody(container, lines, filterQuery) {
     const pre = document.createElement('pre');
     pre.className = 'log-lines';
@@ -1838,10 +1783,8 @@
     idxToGroup = new Array(dateList.length).fill(-1);
     const q = filterInput.value.trim();
 
-    // Flat mode: Day view, Month view with user, or any filter
     const flatMode = currentView === 'day' || (currentUserMode && currentView === 'month') || q;
 
-    // --- Flat mode (expanded days) ---
     if (flatMode) {
       let indicesToRender = [];
       if (q) {
@@ -1898,7 +1841,6 @@
       return;
     }
 
-    // --- Non-flat mode (collapsible month boxes) ---
     const groupsRaw = buildMonthGroupsFromList(dateList);
 
     let groupsToShow = groupsRaw;
@@ -1944,7 +1886,6 @@
     groupsToShow.forEach((_, gi) => updateGroupHeader(gi));
   }
 
-  // ===== OPTIMISED FILTER WITH SAFEGUARD =====
   let filterDebounceTimer = null;
 
   filterInput.addEventListener('input', () => {
@@ -2026,7 +1967,6 @@
     setFooterDone(`${currentChannel}: ${loadedDays} days loaded, ${matchCount} lines match filter "${query}".`);
   }
 
-  // ---- Confirmation button handlers ----
   confirmOkBtn.addEventListener('click', () => {
     confirmOverlay.classList.remove('visible');
     if (pendingFilterQuery) {
@@ -2077,9 +2017,6 @@
 
   cancelBtn.addEventListener('click', cancelSearch);
 
-  // =========================================================
-  // Main LOAD function
-  // =========================================================
   async function loadRange() {
     logCache.clear();
     filterInput.value = '';
@@ -2110,7 +2047,6 @@
     setLoadButtonLoading(true);
 
     if (isId) {
-      // skip instance check
     } else {
       const check = await ensureChecked(channel);
       if (!check || !check.ok) {
@@ -2139,10 +2075,6 @@
       return;
     }
 
-    // Starting a new search supersedes whatever is still running. Stop its
-    // network requests and mark it stale, so a response that arrives late
-    // from the old search can never be written into (or shown as part of)
-    // this new search's results.
     if (loading && activeAbortController) {
       activeAbortController.abort();
     }
@@ -2171,11 +2103,6 @@
     }
     const orderedInstances = availableInstances.slice(startIdx).concat(availableInstances.slice(0, startIdx));
 
-    // Snapshot the instance list for this whole search, same reasoning as in
-    // runChannelCheck: INSTANCES only ever gets reassigned once, shortly
-    // after page load, but this loop can run for a while (many awaits across
-    // possibly many instances), so it should stay consistent with the list it
-    // started with rather than re-reading a global that could have changed.
     const searchInstances = INSTANCES;
 
     let success = false;
@@ -2342,7 +2269,6 @@
         await Promise.all(workers);
       } catch (err) {
         if (err.name === 'AbortError' && cancelRequested) {
-          // ignore
         } else {
           console.error('OmniLogs: unexpected error during load', err);
         }
@@ -2369,7 +2295,6 @@
         try {
           history.replaceState(null, '', buildShareUrl());
         } catch (e) {
-          // Address bar sync is a nice-to-have; never let it block a successful load.
         }
         loadBtn.disabled = false;
         setLoadButtonLoading(false);
@@ -2409,10 +2334,10 @@
 
     autoSwitchNote.style.display = 'none';
     const msg = userMode
-      ? `<div>No logs found for user ${username} in ${urlChannel} on any instance for the selected period.</div>
+      ? `<div>No logs found for user ${escapeHtml(username)} in ${escapeHtml(urlChannel)} on any instance for the selected period.</div>
          <div style="font-size:11px;max-width:440px;">They may not have chatted there during this period,
          or none of the instances have data that far back. Try adjusting the date or instance.</div>`
-      : `<div>No chat logs found for ${urlChannel} on any instance for the selected period.</div>
+      : `<div>No chat logs found for ${escapeHtml(urlChannel)} on any instance for the selected period.</div>
          <div style="font-size:11px;max-width:440px;">The channel may not have been tracked by any
          instance during this period, or may have opted out of logging. Try a different date.</div>`;
     showEmptyState(msg);
@@ -2427,10 +2352,6 @@
     if (loading) {
       cancelSearch();
     }
-    // Supersede any in-flight search the same way a brand-new search would,
-    // so its cancellation cleanup (if it hasn't unwound yet) recognizes
-    // itself as stale via the existing guards and quietly does nothing,
-    // instead of possibly overwriting the reset below a moment later.
     loadToken++;
     dateList = [];
     dayResults = [];
@@ -2504,7 +2425,6 @@
     }
   }
 
-  // ---- Fallback date lists ----
   function buildDateList(view) {
     const today = getUTCToday();
     const todayMidnight = utcMidnight(today.year, today.month, today.day);
