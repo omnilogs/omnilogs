@@ -1035,6 +1035,13 @@
     }
     return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timeoutId));
   }
+  function hasLoadedLogs() {
+    for (let i = 0; i < dayResults.length; i++) {
+      const r = dayResults[i];
+      if (r && r.status === 'ok') return true;
+    }
+    return false;
+  }
   function setControlsDisabled(disabled) {
     instanceBtn.disabled = disabled;
     channelInput.disabled = disabled;
@@ -1043,7 +1050,7 @@
     yearInput.disabled = disabled;
     dayInput.disabled = disabled;
     viewSeg.querySelectorAll('.seg-btn').forEach(b => b.disabled = disabled);
-    filterInput.disabled = disabled;
+    filterInput.disabled = disabled || !hasLoadedLogs();
   }
 
   function showEmptyState(html) {
@@ -1073,6 +1080,7 @@
     </div>
   `;
   showEmptyState(welcomeText);
+  filterInput.disabled = true;
 
   function setView(view) {
     currentView = view;
@@ -1909,7 +1917,6 @@
         pendingFilterQuery = null;
       }
       if (!dateList.length) {
-        renderMain();
         if (q) {
           setFooterDone('No logs are loaded. Load some logs first, then filter.');
         } else {
@@ -2066,6 +2073,7 @@
         setLoadButtonLoading(false);
         showEmptyState(`<div>Fix the channel name above before loading. See the error under the field.</div>`);
         setFooterDone('Channel not found in any instance.');
+        filterInput.disabled = true;
         return;
       }
     }
@@ -2084,6 +2092,7 @@
       setLoadButtonLoading(false);
       showEmptyState(`<div>No instances available for this channel. Check the channel name.</div>`);
       setFooterDone('No instances found.');
+      filterInput.disabled = true;
       return;
     }
 
@@ -2189,6 +2198,7 @@
             cancelBtn.style.display = 'none';
             loading = false;
             setControlsDisabled(false);
+            filterInput.disabled = true;
             reverseBtn.disabled = false;
             statusBar.classList.remove('visible');
             return;
@@ -2341,6 +2351,7 @@
       slotEls = [];
       monthGroups = [];
       idxToGroup = [];
+      filterInput.disabled = true;
       return;
     }
 
@@ -2358,6 +2369,7 @@
       : `${urlChannel}: no logs found on any instance.`);
     window._logSplicerLabel = finalLabel;
     loadBtn.disabled = false;
+    filterInput.disabled = true;
   }
 
   brandWrap.addEventListener('click', () => {
@@ -2401,6 +2413,7 @@
     }
     loading = false;
     setControlsDisabled(false);
+    filterInput.disabled = true;
     loadBtn.disabled = false;
     setLoadButtonLoading(false);
     statusBar.classList.remove('visible');
