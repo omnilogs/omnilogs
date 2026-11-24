@@ -156,6 +156,8 @@
   .led.checking { background: #6a6a76; animation: ledFlicker 1s ease-in-out infinite; }
   .led.on-green { background: #3ddc84; box-shadow: 0 0 3px 1px rgba(61, 220, 132, 0.45); }
   .led.on-red { background: #ff5c5c; box-shadow: 0 0 3px 1px rgba(255, 92, 92, 0.45); }
+  .led.on-green.unverified { background: rgba(61, 220, 132, 0.25); box-shadow: none; outline: 1px solid rgba(61, 220, 132, 0.85); outline-offset: -1px; }
+  .led.on-green.unconfirmed { background: rgba(160, 160, 172, 0.18); box-shadow: none; outline: 1px solid rgba(160, 160, 172, 0.85); outline-offset: -1px; }
   @keyframes ledFlicker { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
   .instance-picker { position: relative; }
@@ -643,9 +645,8 @@
   <div id="autoSwitchNote"></div>
 
   <div id="cors-banner">
-    Could not reach <code id="corsHost">logs.potat.app</code> from this page. The browser blocked it (likely CORS,
-    since that API is not set up for direct in-browser requests from other sites). Try a different instance
-    above, it may allow it.
+    Could not reach <code id="corsHost">logs.potat.app</code> from this page. Your browser blocked the request, most likely
+    because this instance does not allow requests from other websites (CORS). Try a different instance from the list above.
   </div>
 
   <div class="status-bar" id="statusBar">
@@ -671,9 +672,9 @@
 
 <div class="confirm-overlay" id="confirmOverlay">
   <div class="confirm-box">
-    <h2>⚠️ Large Filter Request</h2>
-    <p>Your filter matches <strong id="matchCount">0</strong> lines of logs.</p>
-    <p>Showing this many results may impact performance (high RAM usage).</p>
+    <h2>⚠️ Large Filter Result</h2>
+    <p>Your filter matches <strong id="matchCount">0</strong> lines.</p>
+    <p>Showing this many results may slow down the page and use a lot of memory.</p>
     <p>Do you want to continue?</p>
     <div class="btn-group">
       <button class="btn-cancel" id="confirmCancel">Cancel</button>
@@ -734,7 +735,6 @@
   const corsBanner = document.getElementById('cors-banner');
   const corsHost = document.getElementById('corsHost');
   const viewSeg = document.getElementById('viewSeg');
-  const daySegBtn = viewSeg.querySelector('[data-view="day"]');
   const dayField = document.getElementById('dayField');
   const monthField = document.getElementById('monthField');
   const yearField = document.getElementById('yearField');
@@ -771,9 +771,156 @@
   let channelListPromises = new Map();
   let lastCheckedChannel = null;
   let lastCheckResult = null;
+  let manualPick = null;
+  let loadMiss = new Set();
+  const loadOk = new Set();
+  const channelConfirmed = new Set();
+  const channelListFailedAt = new Map();
+  let missKey = '';
+  let hasSearched = false;
+  let inflightCheck = null;
+
+  function normalizedChannelInput() {
+    return channelInput.value.trim().replace(/^@/, '').toLowerCase();
+  }
+
+  function normalizedUserInput() {
+    return usernameInput.value.trim().replace(/^@/, '').toLowerCase();
+  }
+
+  const availCache = new Map();
+  const listUnsupported = new Set();
+  const listMiss = new Set();
+  let availChannel = '';
+  let userAvailTimer = null;
+
+  function availKey(host, channel, user) {
+    return `${host}|${channel}|${user}`;
+  }
+
+  function parseAvailableLogs(data) {
+    const arr = data && Array.isArray(data.availableLogs) ? data.availableLogs : null;
+    if (!arr) return null;
+    const days = new Set();
+    const months = new Set();
+    const years = new Set();
+    let hasDays = false;
+    for (const e of arr) {
+      if (!e || typeof e !== 'object') return null;
+      const y = parseInt(e.year, 10);
+      const m = parseInt(e.month, 10);
+      if (!y || !m) return null;
+      years.add(y);
+      months.add(y * 100 + m);
+      const d = parseInt(e.day, 10);
+      if (d) {
+        days.add(y * 10000 + m * 100 + d);
+        hasDays = true;
+      }
+    }
+    return { days, months, years, hasDays };
+  }
+
+  async function fetchAvailability(host, channel, user) {
+    const key = availKey(host, channel, user);
+    const cached = availCache.get(key);
+    if (cached && Date.now() - cached.at < 300000) return cached;
+    if (listUnsupported.has(host)) return null;
+    let url = `https://${host}/list?channel=${encodeURIComponent(channel)}`;
+    if (user) url += isIdInput(user) ? `&userid=${encodeURIComponent(extractId(user))}` : `&user=${encodeURIComponent(user)}`;
+    try {
+      const res = await fetchWithTimeout(url, 8000);
+      if (res.status === 405 || res.status === 501) { listUnsupported.add(host); return null; }
+      if (res.status === 404) {
+        let body = null;
+        try { body = await res.json(); } catch (_) {}
+        if (body && typeof body === 'object' && !Array.isArray(body) && typeof body.message === 'string') {
+          const rec = { state: 'empty', days: new Set(), months: new Set(), years: new Set(), hasDays: false, at: Date.now() };
+          availCache.set(key, rec);
+          return rec;
+        }
+        return null;
+      }
+      if (!res.ok) return null;
+      let data;
+      try {
+        data = await res.json();
+      } catch (_) {
+        listUnsupported.add(host);
+        return null;
+      }
+      const parsed = parseAvailableLogs(data);
+      if (!parsed) { listUnsupported.add(host); return null; }
+      const rec = Object.assign({ state: parsed.months.size ? 'ok' : 'empty', at: Date.now() }, parsed);
+      availCache.set(key, rec);
+      return rec;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function currentPeriodSpec() {
+    if (currentView === 'day') {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dayInput.value);
+      return m ? { view: 'day', y: +m[1], m: +m[2], d: +m[3] } : null;
+    }
+    const y = parseInt(yearInput.value, 10);
+    if (!y) return null;
+    if (currentView === 'month') return { view: 'month', y, m: parseInt(monthSelect.value, 10) };
+    return { view: 'year', y };
+  }
+
+  function periodMatches(rec, spec) {
+    if (spec.view === 'year') return rec.years.has(spec.y);
+    if (spec.view === 'month' || !rec.hasDays) return rec.months.has(spec.y * 100 + spec.m);
+    return rec.days.has(spec.y * 10000 + spec.m * 100 + spec.d);
+  }
+
+  function hasPeriodLogs(host, spec, channel, user) {
+    const ch = availCache.get(availKey(host, channel, ''));
+    if (ch && !periodMatches(ch, spec)) return false;
+    if (user) {
+      const u = availCache.get(availKey(host, channel, user));
+      if (u && !periodMatches(u, spec)) return false;
+    }
+    return true;
+  }
+
+  function recomputeListMisses() {
+    const spec = currentPeriodSpec();
+    const before = [...listMiss];
+    listMiss.clear();
+    if (spec) {
+      const channel = normalizedChannelInput();
+      const user = normalizedUserInput();
+      INSTANCES.forEach((inst, idx) => {
+        if (instanceStatuses[idx] === 'available' && !hasPeriodLogs(inst.host, spec, channel, user)) listMiss.add(idx);
+      });
+    }
+    before.forEach(refreshInstanceLed);
+    listMiss.forEach(refreshInstanceLed);
+  }
+
+  async function verifyUserAvailability() {
+    recomputeListMisses();
+    const channel = normalizedChannelInput();
+    const user = normalizedUserInput();
+    if (!channel || isIdInput(channel) || !user) return;
+    const targets = INSTANCES.map((_, idx) => idx).filter(idx => instanceStatuses[idx] === 'available' && !listMiss.has(idx));
+    await Promise.all(targets.map(async idx => {
+      await fetchAvailability(INSTANCES[idx].host, channel, user);
+      if (normalizedChannelInput() === channel && normalizedUserInput() === user) recomputeListMisses();
+    }));
+  }
 
   function resetInstanceState(instances) {
     instanceStatuses = new Array(instances.length).fill('idle');
+    manualPick = null;
+    loadMiss.clear();
+    loadOk.clear();
+    channelConfirmed.clear();
+    channelListFailedAt.clear();
+    missKey = '';
     channelListCache.clear();
     channelListPromises.clear();
     lastCheckedChannel = null;
@@ -793,11 +940,7 @@
       label.textContent = p.label;
       row.appendChild(led);
       row.appendChild(label);
-      row.addEventListener('click', () => {
-        selectInstance(i);
-        autoSwitchNote.style.display = 'none';
-        closeInstanceMenu();
-      });
+      row.addEventListener('click', () => onInstanceClicked(i));
       instanceMenu.appendChild(row);
       instanceOptionEls.push({ rowEl: row, ledEl: led });
     });
@@ -811,6 +954,28 @@
     instanceBtnLabel.textContent = INSTANCES[idx].label;
     instanceBtnLed.className = instanceOptionEls[idx]?.ledEl.className || 'led';
     instanceOptionEls.forEach((o, i) => o.rowEl.classList.toggle('selected', i === idx));
+  }
+
+  function reselectBestIfNeeded() {
+    if (manualPick || loading || hasSearched || channelInput.classList.contains('checking')) return;
+    const candidates = instanceStatuses
+      .map((state, idx) => (state === 'available' && !isPeriodMiss(idx) ? idx : -1))
+      .filter(idx => idx !== -1)
+      .sort((a, b) => instanceTier(a) - instanceTier(b) || a - b);
+    if (!candidates.length) return;
+    const current = selectedInstanceIdx;
+    const currentOk = instanceStatuses[current] === 'available' && !isPeriodMiss(current);
+    if (!currentOk || instanceTier(candidates[0]) < instanceTier(current)) selectInstance(candidates[0]);
+  }
+
+  function onInstanceClicked(i) {
+    closeInstanceMenu();
+    if (loading || loadBtn.disabled) return;
+    if (i === selectedInstanceIdx) return;
+    selectInstance(i);
+    autoSwitchNote.style.display = 'none';
+    manualPick = { idx: i, channel: normalizedChannelInput() };
+    if (hasSearched && manualPick.channel) loadRange();
   }
 
   async function refreshInstanceList() {
@@ -899,6 +1064,7 @@
 
   function daysInMonth(year, month) { return new Date(year, month, 0).getDate(); }
   function pad(n) { return String(n).padStart(2, '0'); }
+  function plural(n, word) { return `${n} ${word}${n === 1 ? '' : 's'}`; }
 
   function getUTCToday() {
     const now = new Date();
@@ -912,8 +1078,16 @@
     const v = n % 100;
     return s[(v - 20) % 10] || s[v] || s[0];
   }
+  const weekdayFormatter = new Intl.DateTimeFormat(undefined, { weekday: 'short', timeZone: 'UTC' });
+  const weekdayCache = new Map();
   function dayOfWeek(year, month, day) {
-    return new Date(year, month - 1, day).toLocaleDateString(undefined, { weekday: 'short' });
+    const key = year * 10000 + month * 100 + day;
+    let label = weekdayCache.get(key);
+    if (label === undefined) {
+      label = weekdayFormatter.format(new Date(Date.UTC(year, month - 1, day)));
+      weekdayCache.set(key, label);
+    }
+    return label;
   }
   function labelForItem(item) {
     if (item.day !== null && item.day !== undefined) {
@@ -1007,13 +1181,15 @@
   const ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
   const ICON_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
 
+  const linkIconTemplate = document.createElement('template');
+  linkIconTemplate.innerHTML = ICON_LINK;
   function createRowLinkBtn(item) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'row-link-btn';
     const isDay = item.day !== null && item.day !== undefined;
     btn.title = `Copy link to this ${isDay ? 'day' : 'month'}`;
-    btn.innerHTML = ICON_LINK;
+    btn.appendChild(linkIconTemplate.content.cloneNode(true));
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
       const ok = await copyTextToClipboard(buildShareUrl(item));
@@ -1027,13 +1203,14 @@
     return btn;
   }
 
-  function fetchWithTimeout(url, ms, abortSignal) {
+  function fetchWithTimeout(url, ms, abortSignal, init) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), ms);
     if (abortSignal) {
-      abortSignal.addEventListener('abort', () => controller.abort());
+      if (abortSignal.aborted) controller.abort();
+      else abortSignal.addEventListener('abort', () => controller.abort());
     }
-    return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timeoutId));
+    return fetch(url, Object.assign({ signal: controller.signal }, init)).finally(() => clearTimeout(timeoutId));
   }
   function hasLoadedLogs() {
     for (let i = 0; i < dayResults.length; i++) {
@@ -1118,33 +1295,72 @@
     if (state === 'idle') return 'led';
     return 'led on-red';
   }
+  function isPeriodMiss(idx) {
+    return listMiss.has(idx) || loadMiss.has(idx);
+  }
+  function isPeriodVerified(idx) {
+    const inst = INSTANCES[idx];
+    return loadOk.has(idx) || (!!inst && availCache.has(availKey(inst.host, normalizedChannelInput(), '')));
+  }
+  function instanceTier(idx) {
+    return isPeriodVerified(idx) ? 0 : channelConfirmed.has(idx) ? 1 : 2;
+  }
+  function instanceTitleFor(idx) {
+    if (isPeriodMiss(idx)) return 'No logs for the selected period';
+    const state = instanceStatuses[idx];
+    if (state === 'checking') return 'Checking...';
+    if (state === 'available') {
+      if (isPeriodVerified(idx)) return 'Has logs for the selected period';
+      if (channelConfirmed.has(idx)) return 'Has this channel, but cannot confirm logs for the selected period';
+      return 'Unconfirmed: this instance cannot report what it has logged. Click to try it.';
+    }
+    if (state === 'nologs') return 'This instance does not have this channel';
+    if (state === 'blocked') return 'Could not reach this instance';
+    return 'Not checked yet';
+  }
+  function refreshInstanceLed(idx) {
+    let cls = ledClassForState(isPeriodMiss(idx) ? 'nologs' : instanceStatuses[idx]);
+    if (cls === 'led on-green' && !isPeriodVerified(idx)) cls += channelConfirmed.has(idx) ? ' unverified' : ' unconfirmed';
+    const o = instanceOptionEls[idx];
+    if (o) {
+      o.ledEl.className = cls;
+      o.rowEl.title = instanceTitleFor(idx);
+    }
+    if (idx === selectedInstanceIdx) instanceBtnLed.className = cls;
+  }
   function setInstanceState(idx, state) {
     if (idx >= instanceStatuses.length) return;
     instanceStatuses[idx] = state;
-    const cls = ledClassForState(state);
-    if (instanceOptionEls[idx]) instanceOptionEls[idx].ledEl.className = cls;
-    if (idx === selectedInstanceIdx) instanceBtnLed.className = cls;
+    if (state === 'idle' || state === 'checking') {
+      loadMiss.delete(idx);
+      loadOk.delete(idx);
+      listMiss.delete(idx);
+      channelConfirmed.delete(idx);
+    }
+    refreshInstanceLed(idx);
+  }
+  function markPeriodMiss(idx) {
+    if (idx >= instanceStatuses.length) return;
+    loadOk.delete(idx);
+    loadMiss.add(idx);
+    refreshInstanceLed(idx);
+  }
+  function clearPeriodMisses() {
+    const old = [...loadMiss, ...loadOk];
+    loadMiss.clear();
+    loadOk.clear();
+    old.forEach(refreshInstanceLed);
   }
 
   function parseChannelList(data) {
+    const arr = Array.isArray(data) ? data : (data && Array.isArray(data.channels) ? data.channels : null);
+    if (!arr) return null;
     const set = new Set();
-    const addName = v => { if (typeof v === 'string' && v.trim()) set.add(v.trim().toLowerCase()); };
-    const walk = node => {
-      if (Array.isArray(node)) {
-        node.forEach(item => {
-          if (typeof item === 'string') addName(item);
-          else if (item && typeof item === 'object') {
-            addName(item.name || item.channel || item.login || item.channelName || item.username || item.channelLogin);
-          }
-        });
-      } else if (node && typeof node === 'object') {
-        const arr = node.channels || node.data || node.list || node.results;
-        if (Array.isArray(arr)) { walk(arr); return; }
-        Object.keys(node).forEach(addName);
-      }
-    };
-    walk(data);
-    return set;
+    for (const item of arr) {
+      const v = typeof item === 'string' ? item : (item && typeof item === 'object' ? (item.name || item.login || item.channel) : null);
+      if (typeof v === 'string' && v.trim()) set.add(v.trim().toLowerCase());
+    }
+    return set.size ? set : null;
   }
 
   async function getInstanceChannelList(hostIdx) {
@@ -1152,20 +1368,19 @@
     const host = INSTANCES[hostIdx].host;
     if (channelListCache.has(hostIdx)) return channelListCache.get(hostIdx);
     if (channelListPromises.has(hostIdx)) return channelListPromises.get(hostIdx);
+    const failedAt = channelListFailedAt.get(hostIdx);
+    if (failedAt && Date.now() - failedAt < 600000) return null;
     const p = (async () => {
       try {
-        const res = await fetchWithTimeout(`https://${host}/list`, 8000);
-        if (!res.ok) return null;
-        const data = await res.json();
-        const set = parseChannelList(data);
-        if (set.size) { channelListCache.set(hostIdx, set); return set; }
-        return null;
-      } catch (_) {
-        return null;
-      } finally {
-        channelListPromises.delete(hostIdx);
-      }
-    })();
+        const res = await fetchWithTimeout(`https://${host}/channels`, 8000, undefined, { priority: 'low' });
+        if (res.ok) {
+          const set = parseChannelList(await res.json());
+          if (set) { channelListCache.set(hostIdx, set); return set; }
+        }
+      } catch (_) {}
+      channelListFailedAt.set(hostIdx, Date.now());
+      return null;
+    })().finally(() => channelListPromises.delete(hostIdx));
     channelListPromises.set(hostIdx, p);
     return p;
   }
@@ -1192,12 +1407,19 @@
     if (hostIdx >= INSTANCES.length) return { status: 'blocked' };
     const host = INSTANCES[hostIdx].host;
 
-    const probe = await probeChannelFallback(host, channel);
-    if (probe.status !== 'blocked') return probe;
+    const probePromise = probeChannelFallback(host, channel);
+    probePromise.catch(() => {});
+    const avail = await fetchAvailability(host, channel, '');
+    if (avail) return { status: avail.state === 'ok' ? 'available' : 'no-logs' };
 
-    const list = await getInstanceChannelList(hostIdx);
-    if (list) return { status: list.has(channel.toLowerCase()) ? 'available' : 'no-logs' };
-    return probe;
+    const listPromise = getInstanceChannelList(hostIdx);
+    const probe = await probePromise;
+    const fromList = list => ({ status: list.has(channel.toLowerCase()) ? 'available' : 'no-logs', channelConfirmed: true });
+    const cachedList = channelListCache.get(hostIdx);
+    if (cachedList) return fromList(cachedList);
+    const failedAt = channelListFailedAt.get(hostIdx);
+    if (failedAt && Date.now() - failedAt < 600000) return probe;
+    return { ...probe, refine: listPromise.then(list => (list ? fromList(list) : null)) };
   }
 
   let channelCheckToken = 0;
@@ -1209,23 +1431,29 @@
     channelError.style.display = 'none';
 
     const instances = INSTANCES;
+    if (availChannel !== channel) {
+      availCache.clear();
+      availChannel = channel;
+    }
     instances.forEach((_, i) => setInstanceState(i, 'checking'));
 
     const total = instances.length;
     if (total === 0) {
       channelInput.classList.remove('checking');
       channelInput.classList.add('error');
-      channelError.textContent = 'Channel not found in any log instance. Check the spelling, or it may not be logged anywhere.';
+      channelError.textContent = 'Channel not found on any instance. Check the spelling, or it may not be logged anywhere.';
       channelError.style.display = 'block';
       return { ok: false };
     }
 
     const GRACE_MS = 1200;
+    const VERIFIED_GRACE_MS = 600;
 
     return new Promise((resolve) => {
       let settledCount = 0;
       let decided = false;
       let graceTimer = null;
+      let graceDeadline = 0;
 
       function finish() {
         if (decided) return;
@@ -1234,23 +1462,33 @@
         if (token !== channelCheckToken) { resolve(null); return; }
         channelInput.classList.remove('checking');
 
+        const keepManual = !!(manualPick && manualPick.channel === channel && manualPick.idx < instances.length);
+        if (!keepManual) manualPick = null;
+
         const availableIdx = instances
           .map((_, i) => i)
           .filter(i => instanceStatuses[i] === 'available');
 
         if (availableIdx.length === 0) {
           channelInput.classList.add('error');
-          channelError.textContent = 'Channel not found in any log instance. Check the spelling, or it may not be logged anywhere.';
+          channelError.textContent = 'Channel not found on any instance. Check the spelling, or it may not be logged anywhere.';
           channelError.style.display = 'block';
           resolve({ ok: false });
           return;
         }
 
         channelError.style.display = 'none';
-        const bestIdx = availableIdx[0];
+        recomputeListMisses();
+        const rankedIdx = availableIdx.filter(i => !isPeriodMiss(i));
+        const bestIdx = (rankedIdx.length ? rankedIdx : availableIdx).slice().sort((a, b) => instanceTier(a) - instanceTier(b) || a - b)[0];
+        setTimeout(verifyUserAvailability, 0);
+        if (keepManual) {
+          resolve({ ok: true, bestIdx });
+          return;
+        }
         if (bestIdx !== selectedInstanceIdx) {
           selectInstance(bestIdx);
-          autoSwitchNote.textContent = `Auto-selected ${instances[bestIdx].label}: best available instance for this channel.`;
+          autoSwitchNote.textContent = `Auto-selected ${instances[bestIdx].label} as the best instance for this channel.`;
           autoSwitchNote.style.display = 'block';
         } else {
           autoSwitchNote.style.display = 'none';
@@ -1266,11 +1504,27 @@
               if (!decided) { decided = true; if (graceTimer) clearTimeout(graceTimer); resolve(null); }
               return;
             }
+            if (r.channelConfirmed && r.status === 'available') channelConfirmed.add(i);
             setInstanceState(i, r.status === 'available' ? 'available' : r.status === 'no-logs' ? 'nologs' : 'blocked');
+            recomputeListMisses();
+            if (r.refine) {
+              r.refine.then(ref => {
+                if (!ref || token !== channelCheckToken) return;
+                if (ref.channelConfirmed && ref.status === 'available') channelConfirmed.add(i);
+                setInstanceState(i, ref.status === 'available' ? 'available' : 'nologs');
+                recomputeListMisses();
+                reselectBestIfNeeded();
+              });
+            }
             settledCount++;
 
-            if (r.status === 'available' && !graceTimer && !decided) {
-              graceTimer = setTimeout(finish, GRACE_MS);
+            if (r.status === 'available' && !decided) {
+              const wait = isPeriodVerified(i) && !isPeriodMiss(i) ? VERIFIED_GRACE_MS : GRACE_MS;
+              if (!graceDeadline || Date.now() + wait < graceDeadline) {
+                clearTimeout(graceTimer);
+                graceDeadline = Date.now() + wait;
+                graceTimer = setTimeout(finish, wait);
+              }
             }
             if (settledCount === total) {
               finish();
@@ -1282,10 +1536,21 @@
 
   async function ensureChecked(channel) {
     if (lastCheckedChannel === channel && lastCheckResult) return lastCheckResult;
-    const res = await runChannelCheck(channel);
-    if (res && res.ok) { lastCheckedChannel = channel; lastCheckResult = res; }
-    else { lastCheckedChannel = null; lastCheckResult = null; }
-    return res;
+    if (inflightCheck && inflightCheck.channel === channel) return inflightCheck.promise;
+
+    const promise = (async () => {
+      const res = await runChannelCheck(channel);
+      if (res && res.ok) { lastCheckedChannel = channel; lastCheckResult = res; }
+      else if (res) { lastCheckedChannel = null; lastCheckResult = null; }
+      return res;
+    })();
+    const entry = { channel, promise };
+    inflightCheck = entry;
+    try {
+      return await promise;
+    } finally {
+      if (inflightCheck === entry) inflightCheck = null;
+    }
   }
 
   let channelDebounceTimer = null;
@@ -1427,9 +1692,25 @@
     return result;
   }
 
+  function indexFromAvailability(rec) {
+    const sorted = Array.from(rec.days).sort((a, b) => a - b);
+    const days = sorted.map(k => ({ year: Math.floor(k / 10000), month: Math.floor(k / 100) % 100, day: k % 100 }));
+    const last = sorted[sorted.length - 1];
+    const t = getUTCToday();
+    const todayMs = Date.UTC(t.year, t.month - 1, t.day);
+    const lastMs = Date.UTC(Math.floor(last / 10000), Math.floor(last / 100) % 100 - 1, last % 100);
+    for (let ms = Math.max(lastMs + 86400000, todayMs - 2 * 86400000); ms <= todayMs; ms += 86400000) {
+      const dt = new Date(ms);
+      days.push({ year: dt.getUTCFullYear(), month: dt.getUTCMonth() + 1, day: dt.getUTCDate() });
+    }
+    return days;
+  }
+
   async function getChannelIndex(host, channel, abortSignal) {
     const key = `${host}|${channel}|index`;
     if (logCache.has(key)) return logCache.get(key);
+    const rec = await fetchAvailability(host, channel, '');
+    if (rec) return rec.state === 'ok' && rec.hasDays ? indexFromAvailability(rec) : null;
     try {
       const url = `https://${host}/channel/${encodeURIComponent(channel)}/index`;
       const res = await fetchWithTimeout(url, 5000, abortSignal);
@@ -1597,7 +1878,7 @@
 
   function fillSlotCollapsed(slot, result) {
     slot.headerRight.className = 'meta ' + (result.status === 'ok' ? 'ok' : result.status === 'empty' ? 'empty' : 'error');
-    slot.headerRight.textContent = result.status === 'ok' ? `${result.lines.length} lines`
+    slot.headerRight.textContent = result.status === 'ok' ? plural(result.lines.length, 'line')
                                   : result.status === 'empty' ? 'no logs'
                                   : (result.message || 'error');
     if (result.status === 'ok') {
@@ -1626,7 +1907,7 @@
     }
 
     slot.headerRight.className = 'meta ' + (result.status === 'ok' ? 'ok' : result.status === 'empty' ? 'empty' : 'error');
-    slot.headerRight.textContent = result.status === 'ok' ? `${result.lines.length} lines`
+    slot.headerRight.textContent = result.status === 'ok' ? plural(result.lines.length, 'line')
                                   : result.status === 'empty' ? 'no logs'
                                   : (result.message || 'error');
     slot.bodyEl.innerHTML = '';
@@ -1695,7 +1976,7 @@
       const result = dayResults[idx];
       if (result && result.status === 'ok' && result.lines && result.lines.length) {
         renderDayBody(container, result.lines, '');
-        group.headerRight.textContent = `${result.lines.length} lines`;
+        group.headerRight.textContent = plural(result.lines.length, 'line');
       } else if (result && result.status === 'empty') {
         container.innerHTML = `<div class="day-empty-note">No logs recorded for this period.</div>`;
         group.headerRight.textContent = '0 lines';
@@ -1708,7 +1989,7 @@
 
     const hasLogs = indices.some(i => dayResults[i] && dayResults[i].status === 'ok');
     if (!hasLogs) {
-      container.innerHTML = `<div class="day-empty-note" style="padding: 10px 20px;">No logs this month</div>`;
+      container.innerHTML = `<div class="day-empty-note" style="padding: 10px 20px;">No logs for this month</div>`;
     } else {
       buildDayRowsInto(container, indices);
     }
@@ -1778,7 +2059,7 @@
       const idx = indices[0];
       const r = dayResults[idx];
       if (r) {
-        group.headerRight.textContent = r.status === 'ok' ? `${r.lines.length} lines` : r.status === 'empty' ? '0 lines' : 'error';
+        group.headerRight.textContent = r.status === 'ok' ? plural(r.lines.length, 'line') : r.status === 'empty' ? '0 lines' : 'error';
       } else {
         group.headerRight.textContent = 'loading...';
       }
@@ -1792,7 +2073,7 @@
     });
     const allDone = doneCount === indices.length;
     group.headerRight.textContent = allDone
-      ? `${okCount}/${indices.length} days, ${lineTotal} lines`
+      ? `${okCount}/${indices.length} days, ${plural(lineTotal, 'line')}`
       : `loading... ${doneCount}/${indices.length}`;
   }
 
@@ -1918,7 +2199,7 @@
       }
       if (!dateList.length) {
         if (q) {
-          setFooterDone('No logs are loaded. Load some logs first, then filter.');
+          setFooterDone('No logs loaded. Load some logs first, then use the filter.');
         } else {
           updateFooterAfterRender();
         }
@@ -1951,7 +2232,7 @@
 
       if (loadedDays === 0) {
         renderMain();
-        setFooterDone('No logs are loaded. Load some logs first, then filter.');
+        setFooterDone('No logs loaded. Load some logs first, then use the filter.');
         return;
       }
 
@@ -1983,7 +2264,7 @@
         }
       }
     }
-    setFooterDone(`${currentChannel}: ${loadedDays} days loaded, ${matchCount} lines match filter "${query}".`);
+    setFooterDone(`${currentChannel}: ${plural(loadedDays, 'day')} loaded, ${plural(matchCount, 'line')} ${matchCount === 1 ? 'matches' : 'match'} the filter "${query}".`);
   }
 
   confirmOkBtn.addEventListener('click', () => {
@@ -2019,7 +2300,7 @@
     const totalDays = dateList.length;
     const loaded = dayResults.filter(r => r && r.status === 'ok').length;
     const totalLines = dayResults.reduce((sum, r) => r && r.status === 'ok' ? sum + r.lines.length : sum, 0);
-    setFooterDone(`${currentChannel}: ${loaded}/${totalDays} days loaded, ${totalLines} lines.`);
+    setFooterDone(`${currentChannel}: ${loaded}/${totalDays} days loaded, ${plural(totalLines, 'line')}.`);
   }
 
   function cancelSearch() {
@@ -2037,6 +2318,7 @@
   cancelBtn.addEventListener('click', cancelSearch);
 
   async function loadRange() {
+    clearTimeout(channelDebounceTimer);
     logCache.clear();
     filterInput.value = '';
     pendingFilterQuery = null;
@@ -2061,25 +2343,35 @@
 
     const username = usernameInput.value.trim().replace(/^@/, '');
     const userMode = !!username;
+    const manual = !!(manualPick && manualPick.channel === normalizedChannelInput() && manualPick.idx < INSTANCES.length);
+    const manualIdx = manual ? manualPick.idx : -1;
+
+    const searchKey = [channel, username, currentView, dayInput.value, monthSelect.value, yearInput.value].join('|');
+    if (searchKey !== missKey) {
+      clearPeriodMisses();
+      missKey = searchKey;
+    }
 
     loadBtn.disabled = true;
     setLoadButtonLoading(true);
 
-    if (isId) {
+    if (isId || manual) {
     } else {
       const check = await ensureChecked(channel);
       if (!check || !check.ok) {
         loadBtn.disabled = false;
         setLoadButtonLoading(false);
-        showEmptyState(`<div>Fix the channel name above before loading. See the error under the field.</div>`);
-        setFooterDone('Channel not found in any instance.');
+        showEmptyState(`<div>Fix the channel name above before loading. The error is shown under the field.</div>`);
+        setFooterDone('Channel not found on any instance.');
         filterInput.disabled = true;
         return;
       }
     }
 
     let availableInstances;
-    if (isId) {
+    if (manual) {
+      availableInstances = [manualIdx];
+    } else if (isId) {
       availableInstances = INSTANCES.map((_, idx) => idx);
     } else {
       availableInstances = instanceStatuses
@@ -2090,8 +2382,8 @@
     if (availableInstances.length === 0) {
       loadBtn.disabled = false;
       setLoadButtonLoading(false);
-      showEmptyState(`<div>No instances available for this channel. Check the channel name.</div>`);
-      setFooterDone('No instances found.');
+      showEmptyState(`<div>No instance has logs for this channel. Check the channel name.</div>`);
+      setFooterDone('No instance has this channel.');
       filterInput.disabled = true;
       return;
     }
@@ -2115,12 +2407,17 @@
     progressPct.textContent = '0%';
     setFooterLoading(0, 0, 0);
 
+    hasSearched = true;
+
     let startIdx;
-    if (isId) {
-      startIdx = availableInstances.indexOf(selectedInstanceIdx);
-      if (startIdx === -1) startIdx = 0;
+    if (!manual && !isId) {
+      const ranked = availableInstances.filter(idx => !isPeriodMiss(idx));
+      if (ranked.length) availableInstances = ranked;
+      availableInstances = availableInstances.slice().sort((a, b) => instanceTier(a) - instanceTier(b) || a - b);
+      startIdx = 0;
     } else {
       startIdx = availableInstances.indexOf(selectedInstanceIdx);
+      if (startIdx === -1) startIdx = 0;
     }
     const orderedInstances = availableInstances.slice(startIdx).concat(availableInstances.slice(0, startIdx));
 
@@ -2172,7 +2469,7 @@
             } else {
               label = `${year}`;
             }
-            inProgressNote = '';
+            inProgressNote = buildDateList(currentView).inProgressNote || '';
             invalid = false;
             isFuture = false;
           }
@@ -2193,7 +2490,7 @@
             loadBtn.disabled = false;
             setLoadButtonLoading(false);
             showEmptyState(`<div>Pick a valid date first.</div>`);
-            setFooterDone('No date selected.');
+            setFooterDone('No valid date selected.');
             activeAbortController = null;
             cancelBtn.style.display = 'none';
             loading = false;
@@ -2309,10 +2606,15 @@
         finalLabel = label;
         finalInProgressNote = inProgressNote || '';
         const who = userMode ? `${username} in ${urlChannel}` : urlChannel;
-        setFooterDone(`${who}, ${label} (${instance.label}): ${okDays}/${total} with logs, ${totalLines} lines total.${finalInProgressNote}`);
+        setFooterDone(`${who}, ${label} (${instance.label}): ${okDays}/${total} with logs, ${plural(totalLines, 'line')} in total.${finalInProgressNote}`);
         window._logSplicerLabel = label;
+        loadMiss.delete(instanceIdx);
+        listMiss.delete(instanceIdx);
+        setInstanceState(instanceIdx, 'available');
+        loadOk.add(instanceIdx);
+        refreshInstanceLed(instanceIdx);
         selectInstance(instanceIdx);
-        autoSwitchNote.textContent = `Using ${instance.label} (found logs)`;
+        autoSwitchNote.textContent = manual ? `Showing ${instance.label} (selected by you)` : `Using ${instance.label} (found logs)`;
         autoSwitchNote.style.display = 'block';
         try {
           history.replaceState(null, '', buildShareUrl());
@@ -2329,8 +2631,12 @@
         activeAbortController = null;
         return;
       } else {
-        autoSwitchNote.textContent = `No logs found on ${instance.label}, trying next...`;
-        autoSwitchNote.style.display = 'block';
+        if (fatalNetworkError) setInstanceState(instanceIdx, 'blocked');
+        else markPeriodMiss(instanceIdx);
+        if (!manual) {
+          autoSwitchNote.textContent = `No logs found on ${instance.label}, trying next...`;
+          autoSwitchNote.style.display = 'block';
+        }
       }
     }
 
@@ -2356,7 +2662,11 @@
     }
 
     autoSwitchNote.style.display = 'none';
-    const msg = userMode
+    const manualLabel = manual && searchInstances[manualIdx] ? searchInstances[manualIdx].label : '';
+    const msg = manual
+      ? `<div>No ${userMode ? 'logs found for user ' + escapeHtml(username) + ' in' : 'chat logs found for'} ${escapeHtml(urlChannel)} on ${escapeHtml(manualLabel)} for the selected period.</div>
+         <div style="font-size:11px;max-width:440px;">Pick another instance from the list, or change the date.</div>`
+      : userMode
       ? `<div>No logs found for user ${escapeHtml(username)} in ${escapeHtml(urlChannel)} on any instance for the selected period.</div>
          <div style="font-size:11px;max-width:440px;">They may not have chatted there during this period,
          or none of the instances have data that far back. Try adjusting the date or instance.</div>`
@@ -2364,7 +2674,9 @@
          <div style="font-size:11px;max-width:440px;">The channel may not have been tracked by any
          instance during this period, or may have opted out of logging. Try a different date.</div>`;
     showEmptyState(msg);
-    setFooterDone(userMode
+    setFooterDone(manual
+      ? `${urlChannel}: no logs found on ${manualLabel}.`
+      : userMode
       ? `${username} in ${urlChannel}: no logs found on any instance.`
       : `${urlChannel}: no logs found on any instance.`);
     window._logSplicerLabel = finalLabel;
@@ -2390,6 +2702,8 @@
     INSTANCES.forEach((_, i) => setInstanceState(i, 'idle'));
     lastCheckedChannel = null;
     lastCheckResult = null;
+    manualPick = null;
+    hasSearched = false;
     autoSwitchNote.style.display = 'none';
     corsBanner.classList.remove('visible');
     channelInput.value = '';
@@ -2420,6 +2734,16 @@
   });
 
   loadBtn.addEventListener('click', loadRange);
+  usernameInput.addEventListener('input', () => {
+    clearTimeout(userAvailTimer);
+    recomputeListMisses();
+    userAvailTimer = setTimeout(verifyUserAvailability, 600);
+  });
+  [dayInput, monthSelect, yearInput].forEach(el => {
+    el.addEventListener('input', recomputeListMisses);
+    el.addEventListener('change', recomputeListMisses);
+  });
+  viewSeg.addEventListener('click', () => setTimeout(recomputeListMisses, 0));
   channelInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadRange(); });
   usernameInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadRange(); });
 
@@ -2584,6 +2908,7 @@
   let running = !document.hidden;
   let particles = [];
   let mx = -1e9, my = -1e9;
+  let lastMove = -1e9;
 
   const TWO_PI = Math.PI * 2;
   const PUSH_R = 150;
@@ -2594,6 +2919,7 @@
     if (e.pointerType !== 'mouse') return;
     mx = e.clientX;
     my = e.clientY;
+    lastMove = performance.now();
   }, { passive: true });
 
   document.addEventListener('pointerout', function (e) {
@@ -2721,6 +3047,7 @@
   function frame(ts) {
     requestAnimationFrame(frame);
     if (!running) { last = ts; return; }
+    if (last && ts - lastMove > 1500 && ts - last < 30) return;
     const dt = last ? Math.min(0.05, (ts - last) / 1000) : 0.016;
     last = ts;
     t += dt;
