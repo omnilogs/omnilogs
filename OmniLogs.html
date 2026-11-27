@@ -7,20 +7,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="dns-prefetch" href="https://logs.zonian.dev">
-<link rel="dns-prefetch" href="https://logs.potat.app">
-<link rel="dns-prefetch" href="https://logs.spanix.team">
-<link rel="dns-prefetch" href="https://logs.nadeko.net">
-<link rel="dns-prefetch" href="https://logs.ivr.fi">
-<link rel="dns-prefetch" href="https://harambelogs.pl">
-<link rel="dns-prefetch" href="https://logs.magichack.xyz">
-<link rel="dns-prefetch" href="https://logs.susgee.dev">
-<link rel="dns-prefetch" href="https://logs.mejkiz.com">
-<link rel="dns-prefetch" href="https://logs.fais.al">
-<link rel="dns-prefetch" href="https://logs.folhinhabot.com">
-<link rel="dns-prefetch" href="https://logxx.dev">
-<link rel="dns-prefetch" href="https://logs.mrchuw.com.br">
-<link rel="dns-prefetch" href="https://logs.twitchmetrics.xyz">
-<link rel="dns-prefetch" href="https://logs.jimmyboy.dev">
 <link href="https://fonts.googleapis.com/css2?family=Inter:opsz@14..32&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -158,6 +144,7 @@
   .led.on-red { background: #ff5c5c; box-shadow: 0 0 3px 1px rgba(255, 92, 92, 0.45); }
   .led.on-green.unverified { background: rgba(61, 220, 132, 0.25); box-shadow: none; outline: 1px solid rgba(61, 220, 132, 0.85); outline-offset: -1px; }
   .led.on-green.unconfirmed { background: rgba(160, 160, 172, 0.18); box-shadow: none; outline: 1px solid rgba(160, 160, 172, 0.85); outline-offset: -1px; }
+  .led.on-amber { background: #ffb020; box-shadow: 0 0 3px 1px rgba(255, 176, 32, 0.45); }
   @keyframes ledFlicker { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
   .instance-picker { position: relative; }
@@ -645,7 +632,7 @@
   <div id="autoSwitchNote"></div>
 
   <div id="cors-banner">
-    Could not reach <code id="corsHost">logs.potat.app</code> from this page. Your browser blocked the request, most likely
+    Could not reach <code id="corsHost"></code> from this page. Your browser blocked the request, most likely
     because this instance does not allow requests from other websites (CORS). Try a different instance from the list above.
   </div>
 
@@ -685,24 +672,13 @@
 
 <script>
 (function () {
-  const FALLBACK_INSTANCES = [
-    { label: 'logs.potat.app',         host: 'logs.potat.app' },
-    { label: 'logs.spanix.team',       host: 'logs.spanix.team' },
-    { label: 'logs.nadeko.net',        host: 'logs.nadeko.net' },
-    { label: 'logs.ivr.fi',            host: 'logs.ivr.fi' },
-    { label: 'harambelogs.pl',         host: 'harambelogs.pl' },
-    { label: 'logs.magichack.xyz',     host: 'logs.magichack.xyz' },
-    { label: 'logs.susgee.dev',        host: 'logs.susgee.dev' },
-    { label: 'logs.mejkiz.com',        host: 'logs.mejkiz.com' },
-    { label: 'logs.fais.al',           host: 'logs.fais.al' },
-    { label: 'logs.folhinhabot.com',   host: 'logs.folhinhabot.com' },
-    { label: 'logxx.dev',              host: 'logxx.dev' },
-    { label: 'logs.mrchuw.com.br',     host: 'logs.mrchuw.com.br' },
-    { label: 'logs.twitchmetrics.xyz', host: 'logs.twitchmetrics.xyz' },
-    { label: 'logs.jimmyboy.dev',      host: 'logs.jimmyboy.dev' },
-  ];
+  const HEALTH_URL = 'https://logs.zonian.dev/health';
+  const NO_INSTANCES_MESSAGE = 'No instances are available right now. Reload the page to try again.';
 
-  let INSTANCES = FALLBACK_INSTANCES.slice();
+  let INSTANCES = [];
+  let instanceListLoaded = false;
+  let resolveInstancesReady;
+  const instancesReady = new Promise(resolve => { resolveInstancesReady = resolve; });
 
   function isIdInput(str) {
     return /^id:\s*\d+$/i.test(str.trim());
@@ -949,6 +925,12 @@
   }
 
   function selectInstance(idx) {
+    if (!INSTANCES.length) {
+      selectedInstanceIdx = 0;
+      instanceBtnLabel.textContent = instanceListLoaded ? 'No instances available' : 'Loading instances...';
+      instanceBtnLed.className = 'led';
+      return;
+    }
     if (idx >= INSTANCES.length) idx = 0;
     selectedInstanceIdx = idx;
     instanceBtnLabel.textContent = INSTANCES[idx].label;
@@ -978,41 +960,55 @@
     if (hasSearched && manualPick.channel) loadRange();
   }
 
-  async function refreshInstanceList() {
-    try {
-      const res = await fetch('https://logs.zonian.dev/instances', { mode: 'cors' });
-      if (!res.ok) throw new Error('Instances fetch failed');
-      const data = await res.json();
-      if (Array.isArray(data) && data.length) {
-        const newInstances = data
-          .filter(item => item.status === 'UP' || item.status === 'up')
-          .map(item => ({
-            host: item.domain || item.host || item.url,
-            label: item.domain || item.host || item.url
-          }))
-          .filter(p => p.host)
-          .sort((a, b) => a.host.localeCompare(b.host));
-
-        if (newInstances.length) {
-          INSTANCES = newInstances;
-        } else {
-          INSTANCES = FALLBACK_INSTANCES.slice();
-        }
-      } else {
-        INSTANCES = FALLBACK_INSTANCES.slice();
+  async function probeInstance(host) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetchWithTimeout(`https://${host}/list?channel=twitch`, 8000);
+        try { if (res.body) res.body.cancel(); } catch (_) {}
+        return true;
+      } catch (e) {
+        if (e && e.name === 'AbortError') return true;
       }
-    } catch (e) {
-      console.warn('Failed to fetch instances, using fallback list:', e);
-      INSTANCES = FALLBACK_INSTANCES.slice();
     }
+    return false;
+  }
+
+  async function fetchHealthHosts() {
+    const res = await fetchWithTimeout(HEALTH_URL, 10000, undefined, { mode: 'cors' });
+    if (!res.ok) throw new Error('Instances fetch failed');
+    const data = await res.json();
+    const map = data && data.instances && typeof data.instances === 'object' && !Array.isArray(data.instances) ? data.instances : null;
+    if (!map) throw new Error('Unexpected instances response');
+    return Object.keys(map).filter(host => host && Number(map[host]) > 0);
+  }
+
+  async function refreshInstanceList() {
+    let hosts = [];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        hosts = await fetchHealthHosts();
+        break;
+      } catch (e) {
+        console.warn('Failed to fetch instances:', e);
+        if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+    }
+    if (hosts.length) {
+      const reachable = await Promise.all(hosts.map(probeInstance));
+      hosts = hosts.filter((_, i) => reachable[i]);
+    }
+    hosts.sort((a, b) => a.localeCompare(b));
+    INSTANCES = hosts.map(host => ({ label: host, host }));
+    instanceListLoaded = true;
     rebuildInstanceOptions(INSTANCES);
+    resolveInstancesReady();
   }
 
   rebuildInstanceOptions(INSTANCES);
   refreshInstanceList();
 
   function toggleInstanceMenu() {
-    if (instanceBtn.disabled) return;
+    if (instanceBtn.disabled || !INSTANCES.length) return;
     instanceMenu.classList.toggle('open');
     instanceBtn.classList.toggle('open');
   }
@@ -1097,9 +1093,7 @@
     return `${MONTHS[item.month - 1]} ${item.year}`;
   }
   function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
   function buildShareUrl(item) {
@@ -1208,7 +1202,7 @@
     const timeoutId = setTimeout(() => controller.abort(), ms);
     if (abortSignal) {
       if (abortSignal.aborted) controller.abort();
-      else abortSignal.addEventListener('abort', () => controller.abort());
+      else abortSignal.addEventListener('abort', () => controller.abort(), { once: true });
     }
     return fetch(url, Object.assign({ signal: controller.signal }, init)).finally(() => clearTimeout(timeoutId));
   }
@@ -1246,7 +1240,7 @@
         <strong>2.</strong> Choose your view (Day, Month, Year) and click LOAD.
       </p>
       <p style="font-size: 13px; line-height: 1.8; color: var(--muted); margin: 0 0 2px 0;">
-        <strong>3.</strong> Green dots show instances with logs, red means none available.
+        <strong>3.</strong> Green dots show instances with logs, red means none available, amber means the instance could not be reached.
       </p>
       <p style="font-size: 13px; line-height: 1.8; color: var(--muted); margin: 0 0 2px 0;">
         <strong>4.</strong> Use the filter box to search within the logs.
@@ -1292,6 +1286,7 @@
   function ledClassForState(state) {
     if (state === 'checking') return 'led checking';
     if (state === 'available') return 'led on-green';
+    if (state === 'blocked') return 'led on-amber';
     if (state === 'idle') return 'led';
     return 'led on-red';
   }
@@ -1306,8 +1301,9 @@
     return isPeriodVerified(idx) ? 0 : channelConfirmed.has(idx) ? 1 : 2;
   }
   function instanceTitleFor(idx) {
-    if (isPeriodMiss(idx)) return 'No logs for the selected period';
     const state = instanceStatuses[idx];
+    if (state === 'blocked') return 'Could not reach this instance';
+    if (isPeriodMiss(idx)) return 'No logs for the selected period';
     if (state === 'checking') return 'Checking...';
     if (state === 'available') {
       if (isPeriodVerified(idx)) return 'Has logs for the selected period';
@@ -1319,7 +1315,8 @@
     return 'Not checked yet';
   }
   function refreshInstanceLed(idx) {
-    let cls = ledClassForState(isPeriodMiss(idx) ? 'nologs' : instanceStatuses[idx]);
+    const status = instanceStatuses[idx];
+    let cls = ledClassForState(status !== 'blocked' && isPeriodMiss(idx) ? 'nologs' : status);
     if (cls === 'led on-green' && !isPeriodVerified(idx)) cls += channelConfirmed.has(idx) ? ' unverified' : ' unconfirmed';
     const o = instanceOptionEls[idx];
     if (o) {
@@ -1430,6 +1427,8 @@
     channelInput.classList.add('checking');
     channelError.style.display = 'none';
 
+    await instancesReady;
+
     const instances = INSTANCES;
     if (availChannel !== channel) {
       availCache.clear();
@@ -1441,7 +1440,7 @@
     if (total === 0) {
       channelInput.classList.remove('checking');
       channelInput.classList.add('error');
-      channelError.textContent = 'Channel not found on any instance. Check the spelling, or it may not be logged anywhere.';
+      channelError.textContent = NO_INSTANCES_MESSAGE;
       channelError.style.display = 'block';
       return { ok: false };
     }
@@ -1816,8 +1815,18 @@
     const matched = linesToRender.filter(l => l.toLowerCase().includes(q));
     if (matched.length) {
       const escQ = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const re = new RegExp(`(${escQ})`, 'ig');
-      pre.innerHTML = matched.map(l => escapeHtml(l).replace(re, '<mark>$1</mark>')).join('\n');
+      const re = new RegExp(escQ, 'ig');
+      pre.innerHTML = matched.map(l => {
+        let out = '';
+        let last = 0;
+        let m;
+        re.lastIndex = 0;
+        while ((m = re.exec(l)) !== null) {
+          out += escapeHtml(l.slice(last, m.index)) + '<mark>' + escapeHtml(m[0]) + '</mark>';
+          last = m.index + m[0].length;
+        }
+        return out + escapeHtml(l.slice(last));
+      }).join('\n');
     }
     container.appendChild(pre);
     return matched.length;
@@ -2329,6 +2338,9 @@
     const rawChannel = rawInput.replace(/^@/, '');
     if (!rawChannel) { channelInput.focus(); return; }
 
+    setLoadButtonLoading(true);
+    await instancesReady;
+
     let isId = false;
     let channelId = null;
     if (isIdInput(rawChannel)) {
@@ -2820,7 +2832,7 @@
       }
     }
     const label = `${year}`;
-    const fullDaysInYear = (new Date(year, 11, 31) - new Date(year, 0, 1)) / 86400000 + 1;
+    const fullDaysInYear = (Date.UTC(year, 11, 31) - Date.UTC(year, 0, 1)) / 86400000 + 1;
     const inProgressNote = (isCurrentYear && list.length < fullDaysInYear)
       ? ` (${year} is still in progress: showing through today. Reload later for more.)`
       : '';
