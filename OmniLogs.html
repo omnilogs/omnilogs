@@ -757,7 +757,8 @@
   let inflightCheck = null;
 
   function normalizedChannelInput() {
-    return channelInput.value.trim().replace(/^@/, '').toLowerCase();
+    const value = channelInput.value.trim().replace(/^@/, '').toLowerCase();
+    return isIdInput(value) ? `id:${extractId(value)}` : value;
   }
 
   function normalizedUserInput() {
@@ -765,13 +766,28 @@
   }
 
   const availCache = new Map();
+  const hostLatency = new Map();
   const listUnsupported = new Set();
+  const idListUnsupported = new Set();
   const listMiss = new Set();
   let availChannel = '';
   let userAvailTimer = null;
 
   function availKey(host, channel, user) {
     return `${host}|${channel}|${user}`;
+  }
+
+  function recordLatency(host, ms) {
+    const samples = hostLatency.get(host) || [];
+    samples.push(ms);
+    if (samples.length > 5) samples.shift();
+    hostLatency.set(host, samples);
+  }
+
+  function hostSpeed(host) {
+    const samples = hostLatency.get(host);
+    if (!samples || !samples.length) return Infinity;
+    return Math.floor(samples.reduce((sum, ms) => sum + ms, 0) / samples.length / 100);
   }
 
   function parseAvailableLogs(data) {
@@ -797,16 +813,34 @@
     return { days, months, years, hasDays };
   }
 
-  async function fetchAvailability(host, channel, user) {
-    const key = availKey(host, channel, user);
+  const availInflight = new Map();
+  function fetchAvailability(host, channel, user) {
+    const key = availKey(host, isIdInput(channel) ? `id:${extractId(channel)}` : channel, user);
+    const cached = availCache.get(key);
+    if (cached && Date.now() - cached.at < 300000) return Promise.resolve(cached);
+    let pending = availInflight.get(key);
+    if (!pending) {
+      pending = requestAvailability(host, channel, user).finally(() => availInflight.delete(key));
+      availInflight.set(key, pending);
+    }
+    return pending;
+  }
+
+  async function requestAvailability(host, channel, user) {
+    const isIdChannel = isIdInput(channel);
+    const channelKey = isIdChannel ? `id:${extractId(channel)}` : channel;
+    const key = availKey(host, channelKey, user);
     const cached = availCache.get(key);
     if (cached && Date.now() - cached.at < 300000) return cached;
-    if (listUnsupported.has(host)) return null;
-    let url = `https://${host}/list?channel=${encodeURIComponent(channel)}`;
+    if (listUnsupported.has(host) || (isIdChannel && idListUnsupported.has(host))) return null;
+    const startedAt = performance.now();
+    let url = isIdChannel
+      ? `https://${host}/list?channelid=${encodeURIComponent(extractId(channel))}`
+      : `https://${host}/list?channel=${encodeURIComponent(channel)}`;
     if (user) url += isIdInput(user) ? `&userid=${encodeURIComponent(extractId(user))}` : `&user=${encodeURIComponent(user)}`;
     try {
       const res = await fetchWithTimeout(url, 8000);
-      if (res.status === 405 || res.status === 501) { listUnsupported.add(host); return null; }
+      if (res.status === 405 || res.status === 501) { (isIdChannel ? idListUnsupported : listUnsupported).add(host); return null; }
       if (res.status === 404) {
         let body = null;
         try { body = await res.json(); } catch (_) {}
@@ -822,13 +856,14 @@
       try {
         data = await res.json();
       } catch (_) {
-        listUnsupported.add(host);
+        (isIdChannel ? idListUnsupported : listUnsupported).add(host);
         return null;
       }
       const parsed = parseAvailableLogs(data);
-      if (!parsed) { listUnsupported.add(host); return null; }
+      if (!parsed) { (isIdChannel ? idListUnsupported : listUnsupported).add(host); return null; }
       const rec = Object.assign({ state: parsed.months.size ? 'ok' : 'empty', at: Date.now() }, parsed);
       availCache.set(key, rec);
+      if (!user) recordLatency(host, performance.now() - startedAt);
       return rec;
     } catch (_) {
       return null;
@@ -940,14 +975,13 @@
 
   function reselectBestIfNeeded() {
     if (manualPick || loading || hasSearched || channelInput.classList.contains('checking')) return;
-    const candidates = instanceStatuses
+    const candidates = sortInstancesByRank(instanceStatuses
       .map((state, idx) => (state === 'available' && !isPeriodMiss(idx) ? idx : -1))
-      .filter(idx => idx !== -1)
-      .sort((a, b) => instanceTier(a) - instanceTier(b) || a - b);
+      .filter(idx => idx !== -1));
     if (!candidates.length) return;
     const current = selectedInstanceIdx;
     const currentOk = instanceStatuses[current] === 'available' && !isPeriodMiss(current);
-    if (!currentOk || instanceTier(candidates[0]) < instanceTier(current)) selectInstance(candidates[0]);
+    if (!currentOk || compareRank(instanceRank(candidates[0]), instanceRank(current)) < 0) selectInstance(candidates[0]);
   }
 
   function onInstanceClicked(i) {
@@ -1300,6 +1334,120 @@
   function instanceTier(idx) {
     return isPeriodVerified(idx) ? 0 : channelConfirmed.has(idx) ? 1 : 2;
   }
+  function instanceCoverage(idx) {
+    const none = { count: -1, earliest: Infinity };
+    const inst = INSTANCES[idx];
+    if (!inst) return none;
+    const channel = normalizedChannelInput();
+    const user = normalizedUserInput();
+    let rec = availCache.get(availKey(inst.host, channel, ''));
+    if (user) {
+      const userRec = availCache.get(availKey(inst.host, channel, user));
+      if (userRec && userRec.state === 'ok') rec = userRec;
+    }
+    if (!rec || rec.state !== 'ok') return none;
+    const spec = currentPeriodSpec();
+    let count = 0;
+    let earliest = Infinity;
+    if (rec.hasDays) {
+      for (const k of rec.days) {
+        if (k < earliest) earliest = k;
+        if (!spec) count++;
+        else if (spec.view === 'year') { if (Math.floor(k / 10000) === spec.y) count++; }
+        else if (spec.view === 'month') { if (Math.floor(k / 100) === spec.y * 100 + spec.m) count++; }
+        else if (k === spec.y * 10000 + spec.m * 100 + spec.d) count++;
+      }
+    } else {
+      for (const k of rec.months) {
+        const first = k * 100 + 1;
+        if (first < earliest) earliest = first;
+        if (!spec) count += 30;
+        else if (spec.view === 'year') { if (Math.floor(k / 100) === spec.y) count += 30; }
+        else if (k === spec.y * 100 + spec.m) count += 30;
+      }
+    }
+    return { count, earliest };
+  }
+  function instanceRank(idx) {
+    const coverage = instanceCoverage(idx);
+    return { tier: instanceTier(idx), count: coverage.count, speed: INSTANCES[idx] ? hostSpeed(INSTANCES[idx].host) : Infinity, earliest: coverage.earliest };
+  }
+  function compareRank(x, y) {
+    if (x.tier !== y.tier) return x.tier - y.tier;
+    if (x.count !== y.count) return y.count - x.count;
+    if (x.speed !== y.speed) return x.speed - y.speed;
+    if (x.earliest !== y.earliest) return x.earliest - y.earliest;
+    return 0;
+  }
+  function sortInstancesByRank(list) {
+    const ranks = new Map(list.map(idx => [idx, instanceRank(idx)]));
+    return list.slice().sort((a, b) => compareRank(ranks.get(a), ranks.get(b)) || a - b);
+  }
+  function applyIdAvailability(idx, rec, channelKey) {
+    if (normalizedChannelInput() !== channelKey) return;
+    const state = instanceStatuses[idx];
+    if (state !== 'checking' && state !== 'idle') return;
+    setInstanceState(idx, rec ? (rec.state === 'ok' ? 'available' : 'nologs') : 'idle');
+    recomputeListMisses();
+    reselectBestIfNeeded();
+  }
+  async function rankInstancesForId(channelKey) {
+    INSTANCES.forEach((_, idx) => {
+      if (instanceStatuses[idx] === 'idle') setInstanceState(idx, 'checking');
+    });
+    await new Promise(resolve => {
+      let settled = 0;
+      let done = false;
+      let timer = null;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      if (!INSTANCES.length) { finish(); return; }
+      INSTANCES.forEach((inst, idx) => {
+        fetchAvailability(inst.host, channelKey, '').then(rec => {
+          settled++;
+          applyIdAvailability(idx, rec, channelKey);
+          if (rec && rec.state === 'ok' && !done && !timer) timer = setTimeout(finish, 600);
+          if (settled === INSTANCES.length) finish();
+        });
+      });
+    });
+    const spec = currentPeriodSpec();
+    const withLogs = [];
+    const unknown = [];
+    const outsidePeriod = [];
+    INSTANCES.forEach((inst, idx) => {
+      const rec = availCache.get(availKey(inst.host, channelKey, ''));
+      if (!rec) unknown.push(idx);
+      else if (rec.state === 'ok') (spec && !periodMatches(rec, spec) ? outsidePeriod : withLogs).push(idx);
+    });
+    const ranked = sortInstancesByRank(withLogs).concat(unknown);
+    if (ranked.length) return { order: ranked, confident: withLogs.length > 0 };
+    if (outsidePeriod.length) return { order: sortInstancesByRank(outsidePeriod), confident: false };
+    return { order: INSTANCES.map((_, idx) => idx), confident: false };
+  }
+  let idCheckToken = 0;
+  async function checkIdInstances(channelKey) {
+    const token = ++idCheckToken;
+    await instancesReady;
+    if (token !== idCheckToken || normalizedChannelInput() !== channelKey) return;
+    channelInput.classList.add('checking');
+    const result = await rankInstancesForId(channelKey);
+    if (token !== idCheckToken) return;
+    channelInput.classList.remove('checking');
+    if (normalizedChannelInput() !== channelKey || loading || loadBtn.disabled) return;
+    const keepManual = !!(manualPick && manualPick.channel === channelKey && manualPick.idx < INSTANCES.length);
+    if (keepManual || !result.confident) return;
+    const best = result.order[0];
+    if (best !== selectedInstanceIdx) {
+      selectInstance(best);
+      autoSwitchNote.textContent = `Auto-selected ${INSTANCES[best].label} as the best instance for this channel.`;
+      autoSwitchNote.style.display = 'block';
+    }
+  }
   function instanceTitleFor(idx) {
     const state = instanceStatuses[idx];
     if (state === 'blocked') return 'Could not reach this instance';
@@ -1404,12 +1552,11 @@
     if (hostIdx >= INSTANCES.length) return { status: 'blocked' };
     const host = INSTANCES[hostIdx].host;
 
-    const probePromise = probeChannelFallback(host, channel);
-    probePromise.catch(() => {});
     const avail = await fetchAvailability(host, channel, '');
     if (avail) return { status: avail.state === 'ok' ? 'available' : 'no-logs' };
 
-    const listPromise = getInstanceChannelList(hostIdx);
+    const probePromise = probeChannelFallback(host, channel);
+    const listPromise = listUnsupported.has(host) ? getInstanceChannelList(hostIdx) : Promise.resolve(null);
     const probe = await probePromise;
     const fromList = list => ({ status: list.has(channel.toLowerCase()) ? 'available' : 'no-logs', channelConfirmed: true });
     const cachedList = channelListCache.get(hostIdx);
@@ -1479,7 +1626,7 @@
         channelError.style.display = 'none';
         recomputeListMisses();
         const rankedIdx = availableIdx.filter(i => !isPeriodMiss(i));
-        const bestIdx = (rankedIdx.length ? rankedIdx : availableIdx).slice().sort((a, b) => instanceTier(a) - instanceTier(b) || a - b)[0];
+        const bestIdx = sortInstancesByRank(rankedIdx.length ? rankedIdx : availableIdx)[0];
         setTimeout(verifyUserAvailability, 0);
         if (keepManual) {
           resolve({ ok: true, bestIdx });
@@ -1506,6 +1653,7 @@
             if (r.channelConfirmed && r.status === 'available') channelConfirmed.add(i);
             setInstanceState(i, r.status === 'available' ? 'available' : r.status === 'no-logs' ? 'nologs' : 'blocked');
             recomputeListMisses();
+            reselectBestIfNeeded();
             if (r.refine) {
               r.refine.then(ref => {
                 if (!ref || token !== channelCheckToken) return;
@@ -1555,6 +1703,7 @@
   let channelDebounceTimer = null;
   channelInput.addEventListener('input', () => {
     clearTimeout(channelDebounceTimer);
+    idCheckToken++;
     const rawVal = channelInput.value.trim();
     if (!rawVal) {
       channelInput.classList.remove('error', 'checking');
@@ -1572,6 +1721,8 @@
       INSTANCES.forEach((_, i) => setInstanceState(i, 'idle'));
       lastCheckedChannel = null;
       lastCheckResult = null;
+      const idKey = `id:${extractId(rawVal)}`;
+      channelDebounceTimer = setTimeout(() => checkIdInstances(idKey), 700);
       return;
     }
     const val = rawVal.replace(/^@/, '').toLowerCase();
@@ -1581,12 +1732,8 @@
     const rawVal = channelInput.value.trim();
     if (!rawVal) return;
     if (isIdInput(rawVal)) {
-      channelInput.classList.remove('error', 'checking');
-      channelError.style.display = 'none';
-      autoSwitchNote.style.display = 'none';
-      INSTANCES.forEach((_, i) => setInstanceState(i, 'idle'));
-      lastCheckedChannel = null;
-      lastCheckResult = null;
+      clearTimeout(channelDebounceTimer);
+      checkIdInstances(`id:${extractId(rawVal)}`);
       return;
     }
     const val = rawVal.replace(/^@/, '').toLowerCase();
@@ -1632,7 +1779,7 @@
         } else {
           const text = await res.text();
           const lines = text.split('\n').filter(l => l.trim().length > 0);
-          monthResult = lines.length ? { status: 'ok', raw: text, lines } : { status: 'empty', raw: '', lines: [] };
+          monthResult = lines.length ? { status: 'ok', raw: '', lines } : { status: 'empty', raw: '', lines: [] };
         }
         if (monthResult.status !== 'error') logCache.set(monthKey, monthResult);
       }
@@ -1642,7 +1789,7 @@
       } else {
         const filteredLines = filterLinesByDay(monthResult.lines, year, month, day);
         result = filteredLines.length
-          ? { status: 'ok', raw: filteredLines.join('\n'), lines: filteredLines }
+          ? { status: 'ok', raw: '', lines: filteredLines }
           : { status: 'empty', raw: '', lines: [] };
       }
     } else {
@@ -1655,7 +1802,7 @@
       } else {
         const text = await res.text();
         const lines = text.split('\n').filter(l => l.trim().length > 0);
-        result = lines.length ? { status: 'ok', raw: text, lines } : { status: 'empty', raw: '', lines: [] };
+        result = lines.length ? { status: 'ok', raw: '', lines } : { status: 'empty', raw: '', lines: [] };
       }
     }
 
@@ -1685,7 +1832,7 @@
     } else {
       const text = await res.text();
       const lines = text.split('\n').filter(l => l.trim().length > 0);
-      result = lines.length ? { status: 'ok', raw: text, lines } : { status: 'empty', raw: '', lines: [] };
+      result = lines.length ? { status: 'ok', raw: '', lines } : { status: 'empty', raw: '', lines: [] };
     }
     if (result.status !== 'error') logCache.set(key, result);
     return result;
@@ -1710,6 +1857,7 @@
     if (logCache.has(key)) return logCache.get(key);
     const rec = await fetchAvailability(host, channel, '');
     if (rec) return rec.state === 'ok' && rec.hasDays ? indexFromAvailability(rec) : null;
+    if (isIdInput(channel)) return null;
     try {
       const url = `https://${host}/channel/${encodeURIComponent(channel)}/index`;
       const res = await fetchWithTimeout(url, 5000, abortSignal);
@@ -2384,7 +2532,11 @@
     if (manual) {
       availableInstances = [manualIdx];
     } else if (isId) {
-      availableInstances = INSTANCES.map((_, idx) => idx);
+      statusBar.classList.add('visible');
+      statusText.textContent = 'Checking instances...';
+      progressFill.style.width = '0%';
+      progressPct.textContent = '0%';
+      availableInstances = (await rankInstancesForId(`id:${channelId}`)).order;
     } else {
       availableInstances = instanceStatuses
         .map((state, idx) => state === 'available' ? idx : -1)
@@ -2392,6 +2544,7 @@
     }
 
     if (availableInstances.length === 0) {
+      statusBar.classList.remove('visible');
       loadBtn.disabled = false;
       setLoadButtonLoading(false);
       showEmptyState(`<div>No instance has logs for this channel. Check the channel name.</div>`);
@@ -2425,7 +2578,9 @@
     if (!manual && !isId) {
       const ranked = availableInstances.filter(idx => !isPeriodMiss(idx));
       if (ranked.length) availableInstances = ranked;
-      availableInstances = availableInstances.slice().sort((a, b) => instanceTier(a) - instanceTier(b) || a - b);
+      availableInstances = sortInstancesByRank(availableInstances);
+      startIdx = 0;
+    } else if (isId && !manual) {
       startIdx = 0;
     } else {
       startIdx = availableInstances.indexOf(selectedInstanceIdx);
@@ -2452,8 +2607,8 @@
       let list, isFuture, label, inProgressNote, invalid;
       let useIndex = false;
 
-      if (!isId && !userMode && currentView !== 'day') {
-        const index = await getChannelIndex(host, urlChannel, activeAbortController ? activeAbortController.signal : undefined);
+      if (!userMode && currentView !== 'day') {
+        const index = await getChannelIndex(host, isId ? `id:${channelId}` : urlChannel, activeAbortController ? activeAbortController.signal : undefined);
         if (myLoadToken !== loadToken) return;
         if (cancelRequested) break;
         if (index && !cancelRequested) {
@@ -2550,34 +2705,46 @@
         const CONCURRENCY = 8;
         let nextIdx = 0;
 
+        function fetchItem(item) {
+          const signal = activeAbortController ? activeAbortController.signal : undefined;
+          if (userMode) {
+            if (currentView === 'day' && item.day !== null) {
+              return fetchDay(host, urlChannel, item.year, item.month, item.day, username, signal);
+            }
+            return fetchUserMonth(host, urlChannel, username, item.year, item.month, signal);
+          }
+          return fetchDay(host, urlChannel, item.year, item.month, item.day, null, signal);
+        }
+
+        function isTransientStatus(message) {
+          const m = /^HTTP (\d+)$/.exec(message || '');
+          if (!m) return false;
+          const code = Number(m[1]);
+          return code === 408 || code === 425 || code === 429 || code >= 500;
+        }
+
         async function worker() {
           while (nextIdx < list.length && !cancelRequested) {
             const idx = nextIdx++;
             const item = list[idx];
             let result;
-            try {
-              if (userMode) {
-                if (currentView === 'day' && item.day !== null) {
-                  result = await fetchDay(host, urlChannel, item.year, item.month, item.day, username, activeAbortController ? activeAbortController.signal : undefined);
-                } else {
-                  result = await fetchUserMonth(host, urlChannel, username, item.year, item.month, activeAbortController ? activeAbortController.signal : undefined);
-                }
-              } else {
-                result = await fetchDay(host, urlChannel, item.year, item.month, item.day, null, activeAbortController ? activeAbortController.signal : undefined);
+            let thrown = null;
+            for (let attempt = 0; attempt < 3; attempt++) {
+              thrown = null;
+              try {
+                result = await fetchItem(item);
+              } catch (err) {
+                if (err.name === 'AbortError' && cancelRequested) return;
+                thrown = err;
+                result = { status: 'error', raw: '', lines: [], message: err.name === 'AbortError' ? 'timeout/network error' : 'network/CORS error' };
               }
-            } catch (err) {
-              if (err.name === 'AbortError') {
-                if (cancelRequested) {
-                  return;
-                } else {
-                  result = { status: 'error', raw: '', lines: [], message: 'timeout/network error' };
-                  if (!fatalNetworkError) fatalNetworkError = err;
-                }
-              } else {
-                result = { status: 'error', raw: '', lines: [], message: 'network/CORS error' };
-                if (!fatalNetworkError) fatalNetworkError = err;
-              }
+              if (result.status !== 'error') break;
+              const retryable = thrown ? okSoFar > 0 : isTransientStatus(result.message);
+              if (!retryable || attempt === 2) break;
+              await new Promise(resolve => setTimeout(resolve, 800 * (attempt + 1)));
+              if (cancelRequested || myLoadToken !== loadToken) return;
             }
+            if (thrown && !fatalNetworkError) fatalNetworkError = thrown;
             if (myLoadToken !== loadToken) return;
             if (cancelRequested) return;
             dayResults[idx] = result;
@@ -2611,6 +2778,7 @@
       dayResults = dayResults.map(r => r || { status: 'error', raw: '', lines: [], message: 'did not finish loading' });
 
       const okDays = dayResults.filter(r => r.status === 'ok').length;
+      const failedDays = dayResults.filter(r => r.status === 'error').length;
       const totalLines = dayResults.reduce((sum, r) => r.status === 'ok' ? sum + r.lines.length : sum, 0);
 
       if (okDays > 0) {
@@ -2618,7 +2786,7 @@
         finalLabel = label;
         finalInProgressNote = inProgressNote || '';
         const who = userMode ? `${username} in ${urlChannel}` : urlChannel;
-        setFooterDone(`${who}, ${label} (${instance.label}): ${okDays}/${total} with logs, ${plural(totalLines, 'line')} in total.${finalInProgressNote}`);
+        setFooterDone(`${who}, ${label} (${instance.label}): ${okDays}/${total} with logs, ${plural(totalLines, 'line')} in total.${failedDays ? ` ${failedDays} failed to load, press LOAD to retry.` : ''}${finalInProgressNote}`);
         window._logSplicerLabel = label;
         loadMiss.delete(instanceIdx);
         listMiss.delete(instanceIdx);
@@ -2701,6 +2869,7 @@
       cancelSearch();
     }
     loadToken++;
+    idCheckToken++;
     dateList = [];
     dayResults = [];
     slotEls = [];
