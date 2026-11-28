@@ -814,6 +814,8 @@
   }
 
   const availInflight = new Map();
+  const availFailure = new Map();
+  const idFailedAt = new Map();
   function fetchAvailability(host, channel, user) {
     const key = availKey(host, isIdInput(channel) ? `id:${extractId(channel)}` : channel, user);
     const cached = availCache.get(key);
@@ -832,7 +834,13 @@
     const key = availKey(host, channelKey, user);
     const cached = availCache.get(key);
     if (cached && Date.now() - cached.at < 300000) return cached;
-    if (listUnsupported.has(host) || (isIdChannel && idListUnsupported.has(host))) return null;
+    const fail = kind => {
+      availFailure.set(key, kind);
+      if (isIdChannel) idFailedAt.set(key, Date.now());
+      return null;
+    };
+    if (listUnsupported.has(host) || (isIdChannel && idListUnsupported.has(host))) return fail('noreport');
+    if (isIdChannel && availFailure.has(key) && Date.now() - (idFailedAt.get(key) || 0) < 60000) return null;
     const startedAt = performance.now();
     let url = isIdChannel
       ? `https://${host}/list?channelid=${encodeURIComponent(extractId(channel))}`
@@ -840,33 +848,37 @@
     if (user) url += isIdInput(user) ? `&userid=${encodeURIComponent(extractId(user))}` : `&user=${encodeURIComponent(user)}`;
     try {
       const res = await fetchWithTimeout(url, 8000);
-      if (res.status === 405 || res.status === 501) { (isIdChannel ? idListUnsupported : listUnsupported).add(host); return null; }
+      if (res.status === 405 || res.status === 501) { (isIdChannel ? idListUnsupported : listUnsupported).add(host); return fail('noreport'); }
       if (res.status === 404) {
         let body = null;
         try { body = await res.json(); } catch (_) {}
         if (body && typeof body === 'object' && !Array.isArray(body) && typeof body.message === 'string') {
           const rec = { state: 'empty', days: new Set(), months: new Set(), years: new Set(), hasDays: false, at: Date.now() };
           availCache.set(key, rec);
+          availFailure.delete(key);
+          idFailedAt.delete(key);
           return rec;
         }
-        return null;
+        return fail('noreport');
       }
-      if (!res.ok) return null;
+      if (!res.ok) return fail('noreport');
       let data;
       try {
         data = await res.json();
       } catch (_) {
         (isIdChannel ? idListUnsupported : listUnsupported).add(host);
-        return null;
+        return fail('noreport');
       }
       const parsed = parseAvailableLogs(data);
-      if (!parsed) { (isIdChannel ? idListUnsupported : listUnsupported).add(host); return null; }
+      if (!parsed) { (isIdChannel ? idListUnsupported : listUnsupported).add(host); return fail('noreport'); }
       const rec = Object.assign({ state: parsed.months.size ? 'ok' : 'empty', at: Date.now() }, parsed);
       availCache.set(key, rec);
+      availFailure.delete(key);
+      idFailedAt.delete(key);
       if (!user) recordLatency(host, performance.now() - startedAt);
       return rec;
-    } catch (_) {
-      return null;
+    } catch (err) {
+      return fail(err && err.name === 'AbortError' ? 'noreport' : 'unreachable');
     }
   }
 
@@ -1387,7 +1399,10 @@
     if (normalizedChannelInput() !== channelKey) return;
     const state = instanceStatuses[idx];
     if (state !== 'checking' && state !== 'idle') return;
-    setInstanceState(idx, rec ? (rec.state === 'ok' ? 'available' : 'nologs') : 'idle');
+    let next;
+    if (rec) next = rec.state === 'ok' ? 'available' : 'nologs';
+    else next = availFailure.get(availKey(INSTANCES[idx].host, channelKey, '')) === 'unreachable' ? 'blocked' : 'available';
+    setInstanceState(idx, next);
     recomputeListMisses();
     reselectBestIfNeeded();
   }
